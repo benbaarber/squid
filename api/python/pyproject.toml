@@ -1,0 +1,11 @@
+[project]
+name = "squid"
+version = "0.1.0"
+description = "Squid python API"
+authors = [{ name = "Ben Barber", email = "ben@vivum.ai" }]
+requires-python = ">=3.10"
+dependencies = ["pyzmq"]
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
