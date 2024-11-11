@@ -44,7 +44,7 @@ fn run(fe_dealer: &zmq::Socket, be_pub: &zmq::Socket, be_router: &zmq::Socket) -
     let mut population = wake_population(&blueprint)?;
     let config = blueprint.ga_config;
 
-    be_pub.send_multipart(&msgb[1..], 0)?;
+    be_pub.send_multipart(["spawn", &blueprint.task_image], 0)?;
 
     let mut sockets = [
         fe_dealer.as_poll_item(zmq::POLLIN),

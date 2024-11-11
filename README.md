@@ -10,6 +10,10 @@ abort (id)
 
 error (id) (message)
 
+### Broker -> Worker protocol
+
+spawn (container uri)
+
 ### Simulation -> Broker protocol
 
 ready
