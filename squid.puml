@@ -1,0 +1,60 @@
+@startuml Squid
+!pragma teoz true
+skinparam SequenceMessageAlignment direction
+
+title Squid
+
+actor Client
+participant Server
+participant Broker
+collections Worker
+collections Simulation
+
+== Topology ==
+Server <-> Broker: DEALER <> DEALER
+& Broker <-> Worker: PUB <> SUB
+note right: PUB/SUB for experiments\nand diagnostic requests
+Broker <-> Worker: PULL <> PUSH
+note right: PULL/PUSH for diagnostic\nacknowledgements
+Client <--> Server: HTTP / Websocket
+& Worker --> Simulation ++ : Spawn process
+Broker <--> Simulation: ROUTER <> DEALER
+Simulation --> Simulation !! : Kill self
+
+== Detailed Workflow ==
+Client -> Client: Build docker image from\nexperiment directory
+note right
+Extend the simulation environment
+image with the directory containing
+the executable and simulation config.
+end note
+[<- Client: Push task image to\nregistry
+Client -> Server: HTTP\nNew experiment request
+note right: Specifies simulation container\nand config.
+Server -> Broker: DEALER\nRelay experiment request
+
+Broker -> Worker: PUB\nBroadcast experiment request
+Broker -> Broker ++ : Start polling ROUTER
+[-> Worker: Pull task image
+Worker -> Simulation ++ : Start containerized simulations
+note right: For each core on the host
+Simulation -> Broker: DEALER\nSend ready signal
+
+loop for each generation (sync)
+  loop for each agent (async)
+    Broker --> Simulation ++ : ROUTER\nReply with agent for simulation
+    Simulation -> Simulation: Run simulation
+    Simulation -> Broker -- : DEALER\nSend results and request another
+    Broker -> Server: DEALER\nUpdate server with progress
+    Server -> Client: Websocket\nParse progress for UI and relay
+  end
+  Broker -> Broker: GA evolution step
+end
+
+Broker --> Simulation !! : ROUTER\nReply with kill signal
+Broker --> Broker -- : Stop polling ROUTER
+Broker -> Server: DEALER\nSend done signal & summary
+Server -> Server: Save experiment to DB
+Server -> Client: Websocket\nRelay info
+
+@enduml
