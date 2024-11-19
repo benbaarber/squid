@@ -1,13 +1,13 @@
 [package]
-name = "squid-broker"
+name = "squid"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 anyhow.workspace = true
-rand = "0.8.5"
-rand_distr = "0.4.3"
-serde.workspace = true
+clap = { version = "4.5.20", features = ["derive"] }
+crossterm = "0.28.1"
+nanoid = "0.4.0"
 serde_json.workspace = true
 shared = { version = "0.1.0", path = "../shared" }
 zmq.workspace = true

@@ -51,7 +51,7 @@ loop for each generation (sync)
   Broker -> Broker: GA evolution step
 end
 
-Broker --> Simulation !! : ROUTER\nReply with kill signal
+Broker --> Simulation !! : ROUTER\nSend kill signal
 Broker --> Broker -- : Stop polling ROUTER
 Broker -> Server: DEALER\nSend done signal & summary
 Server -> Server: Save experiment to DB

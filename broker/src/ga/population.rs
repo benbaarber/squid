@@ -1,52 +1,24 @@
 use rand::seq::SliceRandom;
-use serde::{Deserialize, Serialize};
 use serde_json::Result;
+use shared::GAConfig;
 
 use super::{genome::Species, Agent};
 
 pub trait GenericPopulation {
-    fn config(&self) -> PopulationConfig;
     fn pack_agent(&self, ix: usize) -> Result<Vec<u8>>;
     fn update_agent_score(&mut self, ix: usize, score: f64);
     fn evolve(&mut self);
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct PopulationConfig {
-    pub population_size: usize,
-    pub num_generations: usize,
-    pub elitism_percent: f64,
-    pub random_percent: f64,
-    pub mutation_chance: f64,
-    pub mutation_magnitude: f64,
-}
-
-impl Default for PopulationConfig {
-    fn default() -> Self {
-        Self {
-            population_size: 100,
-            num_generations: 25,
-            elitism_percent: 0.1,
-            random_percent: 0.0,
-            mutation_chance: 0.2,
-            mutation_magnitude: 0.8,
-        }
-    }
 }
 
 #[derive(Clone)]
 pub struct Population<S: Species> {
     species: S,
     agents: Vec<Agent<S::Genome>>,
-    config: PopulationConfig,
+    config: GAConfig,
 }
 
 impl<S: Species> Population<S> {
-    pub fn new(
-        mut config: PopulationConfig,
-        species: S,
-        seeds: Option<Vec<Agent<S::Genome>>>,
-    ) -> Self {
+    pub fn new(mut config: GAConfig, species: S, seeds: Option<Vec<Agent<S::Genome>>>) -> Self {
         let agents = match seeds {
             Some(mut agents) => {
                 if agents.len() < config.population_size {
@@ -95,10 +67,6 @@ impl<S: Species> Population<S> {
 }
 
 impl<S: Species> GenericPopulation for Population<S> {
-    fn config(&self) -> PopulationConfig {
-        self.config
-    }
-
     fn pack_agent(&self, ix: usize) -> Result<Vec<u8>> {
         serde_json::to_vec(&self.agents[ix].genome)
     }
@@ -149,7 +117,7 @@ impl<S: Species> GenericPopulation for Population<S> {
 //         let mut population = Population::new(
 //             vec![test_agent(), test_agent()],
 //             Fitness,
-//             PopulationConfig::default(),
+//             GAConfig::default(),
 //         );
 //         population.agents[0].score = 1.0;
 //         population.agents[1].score = 0.0;

@@ -1,4 +1,8 @@
 local/
-target/
-venv/
 out/
+venv/
+.env
+
+# Dist
+target/
+dist/

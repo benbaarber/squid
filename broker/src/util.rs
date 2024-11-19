@@ -7,10 +7,10 @@ use anyhow::{anyhow, Result};
 #[macro_export]
 macro_rules! synthesize {
     ($species_type:ty, $genome_type:ty, $blueprint:expr) => {{
-        let species: $species_type = serde_json::from_str(&$blueprint.species)?;
+        let species: $species_type = serde_json::from_value($blueprint.species.clone())?;
         let seeds = match &$blueprint.seeds {
             Some(seeds) => {
-                let genomes: Vec<$genome_type> = serde_json::from_str(seeds)?;
+                let genomes: Vec<$genome_type> = serde_json::from_value(seeds.clone())?;
                 let agents = genomes.into_iter().map(Agent::new).collect::<Vec<_>>();
                 Some(agents)
             }
@@ -22,9 +22,9 @@ macro_rules! synthesize {
     }};
 }
 
-pub fn de_usize(frame: &[u8]) -> Result<usize> {
-    let bytes: [u8; 8] = frame
+pub fn _de_router_id(frame: &[u8]) -> Result<u32> {
+    let bytes: [u8; 4] = frame[1..]
         .try_into()
-        .map_err(|_| anyhow!("Invalid message length for u64 conversion"))?;
-    Ok(u64::from_le_bytes(bytes) as usize)
+        .map_err(|_| anyhow!("Byte array should be 5 bytes long"))?;
+    Ok(u32::from_le_bytes(bytes))
 }
