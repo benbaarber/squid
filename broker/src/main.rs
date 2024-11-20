@@ -198,7 +198,7 @@ fn experiment_loop(
                     b"done" => {
                         let ix = de_usize(&msgb[2])?;
                         let result: Summary = serde_json::from_slice(&msgb[3])?;
-                        population.update_agent_score(ix, result.score);
+                        population.update_agent_fitness(ix, result.fitness);
                         completed_sims += 1;
 
                         main_sock.send_multipart(

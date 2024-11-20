@@ -6,7 +6,7 @@ use super::{genome::Species, Agent};
 
 pub trait GenericPopulation {
     fn pack_agent(&self, ix: usize) -> Result<Vec<u8>>;
-    fn update_agent_score(&mut self, ix: usize, score: f64);
+    fn update_agent_fitness(&mut self, ix: usize, fitness: f64);
     fn evolve(&mut self);
 }
 
@@ -59,9 +59,9 @@ impl<S: Species> Population<S> {
     /// Sort agents by fitness
     fn sort_agents(&mut self) {
         self.agents.sort_by(|a, b| {
-            a.score
-                .partial_cmp(&b.score)
-                .expect("There are no NaN agent scores")
+            a.fitness
+                .partial_cmp(&b.fitness)
+                .expect("There are no NaN agent fitness values")
         });
     }
 }
@@ -71,8 +71,8 @@ impl<S: Species> GenericPopulation for Population<S> {
         serde_json::to_vec(&self.agents[ix].genome)
     }
 
-    fn update_agent_score(&mut self, ix: usize, score: f64) {
-        self.agents[ix].score = score;
+    fn update_agent_fitness(&mut self, ix: usize, fitness: f64) {
+        self.agents[ix].fitness = fitness;
     }
 
     fn evolve(&mut self) {
@@ -102,27 +102,3 @@ impl<S: Species> GenericPopulation for Population<S> {
         }
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-
-//     fn test_agent() -> Agent {
-//         let model = CTRNN::new(1, 1, 1, 0.1);
-//         Agent::new(model)
-//     }
-
-//     #[test]
-//     fn sort_agents() {
-//         let mut population = Population::new(
-//             vec![test_agent(), test_agent()],
-//             Fitness,
-//             GAConfig::default(),
-//         );
-//         population.agents[0].score = 1.0;
-//         population.agents[1].score = 0.0;
-//         population.sort_agents();
-//         assert_eq!(population.agents[0].score, 0.0);
-//         assert_eq!(population.agents[1].score, 1.0);
-//     }
-// }

@@ -4,14 +4,14 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 
 fn main() -> Result<()> {
-    let broker_addr =
-        std::env::var("SQUID_BROKER_PUB_ADDR").context("$SQUID_BROKER_PUB_ADDR not set")?;
+    let broker_url =
+        std::env::var("SQUID_BROKER_PUB_URL").context("$SQUID_BROKER_PUB_URL not set")?;
 
     let ctx = zmq::Context::new();
     let broker_sub = ctx.socket(zmq::SUB)?;
     broker_sub.set_subscribe(b"spawn")?;
     broker_sub.set_subscribe(b"abort")?;
-    broker_sub.connect(&broker_addr)?;
+    broker_sub.connect(&broker_url)?;
 
     loop {
         let res = worker_loop(&broker_sub);
@@ -26,8 +26,8 @@ fn worker_loop(broker_sub: &zmq::Socket) -> Result<()> {
     let cmd = msgb[0].as_slice();
     match cmd {
         b"spawn" => {
-            println!("SPAWN ID: {}", id);
             let id = str::from_utf8(&msgb[1])?;
+            println!("SPAWN ID: {}", id);
             let label = format!("squid_id={}", id);
             let task_image = str::from_utf8(&msgb[2])?;
             let cpus = num_cpus::get_physical();

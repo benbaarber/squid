@@ -41,8 +41,8 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let broker_addr =
-        std::env::var("SQUID_BROKER_DEALER_ADDR").context("$SQUID_BROKER_DEALER_ADDR not set")?;
+    let broker_url =
+        std::env::var("SQUID_BROKER_DEALER_URL").context("$SQUID_BROKER_DEALER_URL not set")?;
 
     let ctx = zmq::Context::new();
 
@@ -66,15 +66,15 @@ fn main() -> Result<()> {
 
                 let broker_sock = ctx.socket(zmq::DEALER)?;
                 broker_sock.set_linger(0)?;
-                broker_sock.connect(&broker_addr)?;
+                broker_sock.connect(&broker_url)?;
 
                 broker_sock.send("ping", 0)?;
                 if broker_sock.poll(zmq::POLLIN, 5000)? > 0 {
                     if broker_sock.recv_bytes(0)?.starts_with(b"pong") {
-                        println!("🔗 Connected to Squid broker at {}", &broker_addr);
+                        println!("🔗 Connected to Squid broker at {}", &broker_url);
                     }
                 } else {
-                    bail!("Squid broker was unresponsive at {}", &broker_addr);
+                    bail!("Squid broker was unresponsive at {}", &broker_url);
                 }
 
                 let id = nanoid!(8);
@@ -109,7 +109,7 @@ fn main() -> Result<()> {
         Commands::Abort => {
             // Abort cmd is temporary so just blocking and assuming it will connect
             let broker_sock = ctx.socket(zmq::DEALER)?;
-            broker_sock.connect(&broker_addr)?;
+            broker_sock.connect(&broker_url)?;
             broker_sock.send("abort", 0)?;
             println!("abort signal sent, check other terminal");
         }

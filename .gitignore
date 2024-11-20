@@ -6,3 +6,4 @@ venv/
 # Dist
 target/
 dist/
+*.egg-info/

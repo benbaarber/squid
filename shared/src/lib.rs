@@ -25,7 +25,7 @@ pub struct Blueprint {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Summary {
-    pub score: f64,
+    pub fitness: f64,
 }
 
 // util functions
