@@ -1,5 +1,6 @@
 import json
 import os
+import struct
 from typing import Callable
 import zmq
 
@@ -36,8 +37,14 @@ def run(sim_fn: Callable[[dict], dict]):
                 agent = json.loads(msgb[2])
                 try:
                     result = sim_fn(agent)
+                    fitness_b = struct.pack("<d", result["fitness"])
                     socket.send_multipart(
-                        [b"done", msgb[1], json.dumps(result).encode("utf-8")]
+                        [
+                            b"done",
+                            msgb[1],
+                            fitness_b,
+                            json.dumps(result).encode("utf-8"),
+                        ]
                     )
                     socket.send(b"ready")
                 except Exception as e:
