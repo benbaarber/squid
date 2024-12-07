@@ -1,0 +1,28 @@
+[experiment]
+task_image = "docker.io/library/squid-task-example"
+genus = "CTRNN"
+seed_dir = "./saved_agents/2024-12-05_13-09-52"
+out_dir = "./saved_agents"
+
+[species]
+input_size = 7
+hidden_size = 2
+output_size = 4
+step_size = 0.1
+tau_bounds = [1e-5, 16]
+weight_bounds = [-16, 16]
+bias_bounds = [-16, 16]
+gain_bounds = [1e-5, 16]
+
+[ga]
+population_size = 50
+num_generations = 100
+elitism_percent = 0.10
+random_percent = 0
+mutation_chance = 0.1
+mutation_magnitude = 1
+save_every = 10
+save_percent = 0.10
+
+[csv_data]
+somedata = ["h1", "h2", "h3"]
