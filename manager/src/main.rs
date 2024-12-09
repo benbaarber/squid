@@ -48,18 +48,9 @@ fn manager_loop(broker_sub: &zmq::Socket, num_containers: usize) -> Result<()> {
             println!("SPAWN ID: {}", id);
             let label = format!("squid_id={}", id);
             let task_image = str::from_utf8(&msgb[2])?;
-            for i in 0..num_containers {
+            for _ in 0..num_containers {
                 Command::new("docker")
-                    .args([
-                        "run",
-                        "--rm",
-                        "-d",
-                        "-l",
-                        &label,
-                        format!("--cpuset-cpus={}", i).as_str(),
-                        task_image,
-                        id,
-                    ])
+                    .args(["run", "--rm", "-d", "-l", &label, task_image, id])
                     .spawn()?;
             }
         }
