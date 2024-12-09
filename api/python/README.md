@@ -75,6 +75,7 @@ Then run `pip install squid --index-url $SQUID_PACKAGE_URL`
 
 - Python 3.11+
 - `pyzmq`
+- `orjson`
 
 ## Development
 

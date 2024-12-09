@@ -1,12 +1,12 @@
-import json
 import os
 import struct
 import sys
 from typing import Callable
+import orjson
 import zmq
 
 
-def run(sim_fn: Callable[[dict], tuple[float, dict[str, list[list[float]]] | None]]):
+def run(sim_fn: Callable[[dict], tuple[float, dict | None]]):
     """
     Run the simulation loop.
 
@@ -64,7 +64,7 @@ def run(sim_fn: Callable[[dict], tuple[float, dict[str, list[list[float]]] | Non
                             best_agent_data = None
                             current_gen = gen
 
-                        agent = json.loads(msgb[4])
+                        agent = orjson.loads(msgb[4])
                         fitness, data = sim_fn(agent)
                         if fitness > best_agent_fitness:
                             best_agent_fitness = fitness
@@ -99,7 +99,7 @@ def run(sim_fn: Callable[[dict], tuple[float, dict[str, list[list[float]]] | Non
                                 f"moredata generation mismatch from broker, expected gen {current_gen}, got gen {gen}"
                             )
 
-                        data_b = json.dumps(best_agent_data).encode()
+                        data_b = orjson.dumps(best_agent_data)
                         socket.send_multipart(
                             [exp_id_b, b"moredata", msgb[2], msgb[3], data_b]
                         )
