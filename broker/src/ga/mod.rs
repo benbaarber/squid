@@ -1,6 +1,3 @@
-mod agent;
+pub mod agent;
 pub mod genome;
-mod population;
-
-pub use agent::Agent;
-pub use population::{GenericPopulation, Population};
+pub mod population;

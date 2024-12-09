@@ -8,7 +8,10 @@ pub struct Agent<G> {
 
 impl<G: Genome> Agent<G> {
     pub fn new(genome: G) -> Self {
-        Self { genome, fitness: 0.0 }
+        Self {
+            genome,
+            fitness: 0.0,
+        }
     }
 
     pub fn clone_and_mutate(&self, species: &G::Species, chance: f64, magnitude: f64) -> Self {

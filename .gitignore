@@ -1,9 +1,12 @@
 local/
 out/
 venv/
+__pycache__/
+.vscode/
 .env
 
 # Dist
 target/
+build/
 dist/
 *.egg-info/

@@ -1,13 +1,15 @@
+use anyhow::Result;
 use rand::seq::SliceRandom;
-use serde_json::Result;
-use shared::GAConfig;
+use shared::{GAConfig, PopEvaluation};
 
-use super::{genome::Species, Agent};
+use super::{agent::Agent, genome::Species};
 
 pub trait GenericPopulation {
-    fn pack_agent(&self, ix: usize) -> Result<Vec<u8>>;
-    fn update_agent_fitness(&mut self, ix: usize, fitness: f64);
+    fn evaluate(&self) -> PopEvaluation;
     fn evolve(&mut self);
+    fn pack_agent(&self, ix: usize) -> Result<Vec<u8>>;
+    fn pack_save(&self) -> Result<Vec<u8>>;
+    fn update_agent_fitness(&mut self, ix: usize, fitness: f64);
 }
 
 #[derive(Clone)]
@@ -47,7 +49,6 @@ impl<S: Species> Population<S> {
                 .map(|_| Agent::new(species.random_genome()))
                 .collect(),
         };
-        // let agents = vec![Agent::new(); config.population_size];
 
         Self {
             agents,
@@ -67,12 +68,21 @@ impl<S: Species> Population<S> {
 }
 
 impl<S: Species> GenericPopulation for Population<S> {
-    fn pack_agent(&self, ix: usize) -> Result<Vec<u8>> {
-        serde_json::to_vec(&self.agents[ix].genome)
-    }
+    fn evaluate(&self) -> PopEvaluation {
+        let best_fitness = self
+            .agents
+            .iter()
+            .map(|x| x.fitness)
+            .reduce(f64::max)
+            .expect("Agents vec is not empty");
 
-    fn update_agent_fitness(&mut self, ix: usize, fitness: f64) {
-        self.agents[ix].fitness = fitness;
+        let avg_fitness =
+            self.agents.iter().map(|x| x.fitness).sum::<f64>() / self.agents.len() as f64;
+
+        PopEvaluation {
+            best_fitness,
+            avg_fitness,
+        }
     }
 
     fn evolve(&mut self) {
@@ -97,8 +107,30 @@ impl<S: Species> GenericPopulation for Population<S> {
             );
         }
 
-        for _ in random_start_ix..self.agents.len() {
-            // self.agents[i] = Agent::new(self.model_config.build());
+        for i in random_start_ix..self.agents.len() {
+            self.agents[i] = Agent::new(self.species.random_genome());
         }
+    }
+
+    fn pack_agent(&self, ix: usize) -> Result<Vec<u8>> {
+        Ok(serde_json::to_vec(&self.agents[ix].genome)?)
+    }
+
+    fn pack_save(&self) -> Result<Vec<u8>> {
+        let num_save = (self.agents.len() as f64 * self.config.save_percent)
+            .round()
+            .max(1.0) as usize;
+        let packed_agents = self
+            .agents
+            .iter()
+            .take(num_save)
+            .map(|a| serde_json::to_string(&a.genome))
+            .collect::<serde_json::Result<Vec<_>>>()?;
+        let pack = bincode::serialize(&packed_agents)?;
+        Ok(pack)
+    }
+
+    fn update_agent_fitness(&mut self, ix: usize, fitness: f64) {
+        self.agents[ix].fitness = fitness;
     }
 }

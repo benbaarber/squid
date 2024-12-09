@@ -5,9 +5,15 @@ edition = "2021"
 
 [dependencies]
 anyhow.workspace = true
-clap = { version = "4.5.20", features = ["derive"] }
+bincode.workspace = true
+chrono = { version = "0.4.38", default-features = false, features = ["clock", "std"] }
+clap.workspace = true
 crossterm = "0.28.1"
+csv = "1.3.1"
+log.workspace = true
 nanoid = "0.4.0"
+ratatui = { version = "0.29.0", features = ["unstable-widget-ref"] }
 serde_json.workspace = true
-shared = { version = "0.1.0", path = "../shared" }
+shared.workspace = true
+toml.workspace = true
 zmq.workspace = true

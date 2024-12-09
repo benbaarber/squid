@@ -5,9 +5,11 @@ edition = "2021"
 
 [dependencies]
 anyhow.workspace = true
+bincode.workspace = true
 rand = "0.8.5"
 rand_distr = "0.4.3"
 serde.workspace = true
 serde_json.workspace = true
-shared = { version = "0.1.0", path = "../shared" }
+shared.workspace = true
+toml.workspace = true
 zmq.workspace = true

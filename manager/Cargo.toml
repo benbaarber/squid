@@ -1,9 +1,10 @@
 [package]
-name = "squid-worker"
+name = "squid-manager"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 anyhow.workspace = true
+clap.workspace = true
 num_cpus = "1.16.0"
 zmq.workspace = true
