@@ -26,7 +26,7 @@ macro_rules! synthesize {
     }};
 }
 
-pub fn _de_router_id(frame: &[u8]) -> Result<u32> {
+pub fn de_router_id(frame: &[u8]) -> Result<u32> {
     let bytes: [u8; 4] = frame[1..]
         .try_into()
         .map_err(|_| anyhow!("Byte array should be 5 bytes long"))?;

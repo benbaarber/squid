@@ -34,31 +34,43 @@ pub struct Blueprint {
     pub csv_data: Option<HashMap<String, Vec<String>>>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct Summary {
-    pub fitness: f64,
-}
-
+/// Best and average fitness scores of a single generation,
+/// evaluated in the broker and sent to the client after each generation.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct PopEvaluation {
     pub best_fitness: f64,
     pub avg_fitness: f64,
 }
 
+/// Enum to represent the status of a manager process
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum ManagerStatus {
+    Idle,
+    Active,
+    Pulling,
+    Crashed,
+}
+
 // util functions
 
 pub fn de_usize(frame: &[u8]) -> Result<usize> {
+    Ok(de_u32(frame)? as usize)
+}
+
+pub fn de_u32(frame: &[u8]) -> Result<u32> {
+    let len = frame.len();
     let bytes: [u8; 4] = frame
         .try_into()
-        .map_err(|_| anyhow!("Invalid message length for u32 conversion"))?;
-    Ok(u32::from_le_bytes(bytes) as usize)
+        .map_err(|_| anyhow!("Invalid slice length for u32 conversion: {}", len))?;
+    Ok(u32::from_le_bytes(bytes))
 }
 
 pub fn de_f64(frame: &[u8]) -> Result<f64> {
     let len = frame.len();
     let bytes: [u8; 8] = frame
         .try_into()
-        .map_err(|_| anyhow!("Invalid message length for f64 conversion: {}", len))?;
+        .map_err(|_| anyhow!("Invalid slice length for f64 conversion: {}", len))?;
     Ok(f64::from_le_bytes(bytes))
 }
 

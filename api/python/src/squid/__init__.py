@@ -26,10 +26,10 @@ def run(sim_fn: Callable[[dict], tuple[float, dict | None]]):
     """
     exp_id_b = sys.argv[1].encode()
 
-    broker_url = os.environ.get("SQUID_BROKER_ROUTER_URL")
+    broker_url = os.environ.get("SQUID_BROKER_WK_SOCK_URL")
     if broker_url is None:
         raise EnvironmentError(
-            "Environment variable 'SQUID_BROKER_ROUTER_URL' is undefined."
+            "Environment variable 'SQUID_BROKER_WK_SOCK_URL' is undefined."
         )
 
     if not callable(sim_fn):

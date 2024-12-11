@@ -105,9 +105,9 @@ Then simply run `squid-python-publish`.
 
 ### Running it standalone
 
-To use the runner standalone, you will need to set the `SQUID_BROKER_ROUTER_URL` environment variable:
+To use the runner standalone, you will need to set the `SQUID_BROKER_WK_SOCK_URL` environment variable:
 ```bash
-export SQUID_BROKER_ROUTER_URL="tcp://<broker-address>:<port>"
+export SQUID_BROKER_WK_SOCK_URL="tcp://<broker-address>:5557"
 ```
 
 Additionally, `squid.run()` expects the ID of the experiment to be passed as a command line argument. This is done automatically by the manager process when it spawns the containers, so currently, to use the runner standalone, you will have to start the experiment and then copy the ID and pass it as a command line argument manually.

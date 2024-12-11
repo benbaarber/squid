@@ -3,12 +3,16 @@
 ### Client -> Broker
 
 - ping
+- status
 - run (id: `str`) (blueprint: `Blueprint`) (seeds: `Vec<Species>`)
 - abort (id: `str`)
 
 ### Broker -> Client
 
 - pong
+- status
+  - idle
+  - busy
 - prog (id: `str`)
   - gen (num: `u32`)
     - running
@@ -17,16 +21,25 @@
     - running
     - done
     - failed (message: `str`)
+  - manager (mgid: `u32`) (status: `ManagerStatus`)
 - save (id: `str`)
   - population (agents: `Vec<json>`)
-  - data (data: `json`)
+  - data (gen: `u32`) (data: `json`)
 - done (id: `str`)
-- error (id: `str`) (message: `str`)
+- error (message: `str`)
 
 ### Broker -> Manager
 
+- registered
 - spawn (id: `str`) (task_image: `str`)
 - abort (id: `str`)
+- [TODO] meta (info req)
+
+### Manager -> Broker
+
+- register (num_workers: `u32`)
+- status (status: `ManagerStatus`) 
+- [TODO] meta (info res)
 
 ### Worker -> Broker
 

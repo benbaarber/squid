@@ -11,9 +11,9 @@ use std::{
 use anyhow::{bail, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use layout::Flex;
-use log::Level;
+use log::{info, warn, Level};
 use ratatui::{prelude::*, widgets::*};
-use shared::{de_usize, Blueprint, PopEvaluation};
+use shared::{de_u32, de_usize, Blueprint, ManagerStatus, PopEvaluation};
 use style::{Styled, Stylize};
 use text::ToSpan;
 
@@ -158,6 +158,22 @@ impl App {
                         let status = msgb[2].as_slice();
                         if status == b"done" {
                             self.agents_done += 1;
+                        }
+                    }
+                    b"manager" => {
+                        let mgid = de_u32(&msgb[1])?;
+                        let status: ManagerStatus = bincode::deserialize(&msgb[2])?;
+                        match status {
+                            ManagerStatus::Pulling => {
+                                info!("🐋 Manager {:x} is pulling the docker image...", mgid)
+                            }
+                            ManagerStatus::Crashed => warn!("🐋 Manager {:x} crashed", mgid),
+                            ManagerStatus::Active => {
+                                info!("🐋 Manager {:x} spawned your containers...", mgid)
+                            }
+                            ManagerStatus::Idle => {
+                                info!("🐋 Manager {:x} is loafing around...", mgid)
+                            }
                         }
                     }
                     b"done" => {

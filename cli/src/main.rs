@@ -33,6 +33,9 @@ enum Commands {
         /// Blueprint file
         #[arg(short, long, value_name = "FILE", default_value = "./blueprint.toml")]
         blueprint: PathBuf,
+        // /// Run in test mode (spawns a single worker container locally and simulates a single agent)
+        // #[arg(short, long)]
+        // test: bool,
     },
     /// Abort the running experiment
     Abort,
@@ -56,8 +59,8 @@ fn main() -> Result<()> {
             let logs = logger::init();
             let ctx = zmq::Context::new();
 
-            let broker_url = std::env::var("SQUID_BROKER_DEALER_URL")
-                .context("$SQUID_BROKER_DEALER_URL not set")?;
+            let broker_url = std::env::var("SQUID_BROKER_FE_SOCK_URL")
+                .context("$SQUID_BROKER_FE_SOCK_URL not set")?;
 
             let blueprint_s = fs::read_to_string(bpath)
                 .with_context(|| format!("Failed to open blueprint file `{}`", bpath.display()))?;
@@ -71,62 +74,8 @@ fn main() -> Result<()> {
 
             let parent_path = bpath
                 .parent()
-                .ok_or_else(|| anyhow!("Blueprint path had invalid parent"))?;
-
-            // Create outdir
-
-            let mut out_dir = parent_path.join(&blueprint.experiment.out_dir);
-            if !out_dir.exists() {
-                fs::create_dir_all(&out_dir)?;
-            }
-
-            let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
-            out_dir.push(timestamp);
-
-            fs::create_dir(&out_dir)?;
-            fs::create_dir(out_dir.join("agents"))?;
-
-            fs::write(
-                out_dir.join("population_parameters.txt"),
-                blueprint.ga.display(),
-            )?;
-
-            // Create CSV files and write headers
-
-            let data_dir = out_dir.join("data");
-            fs::create_dir(&data_dir)?;
-
-            fs::write(data_dir.join("fitness_scores.csv"), "avg,best\n")?;
-
-            if let Some(ref csv_data) = blueprint.csv_data {
-                for (name, headers) in csv_data {
-                    fs::write(
-                        data_dir.join(name).with_extension("csv"),
-                        format!("gen,{}\n", headers.join(",")),
-                    )?;
-                }
-            }
-
-            // Check for optional seeds
-
-            let seeds_b = match blueprint.experiment.seed_dir {
-                Some(ref path) => {
-                    let seeds_dir = parent_path.join(path);
-                    let population_size = blueprint.ga.population_size;
-                    let seeds = read_agents_from_dir(&seeds_dir, population_size)?;
-                    info!(
-                        "🔧 Seeding population from `{}`",
-                        seeds_dir.canonicalize()?.display()
-                    );
-                    bincode::serialize(&seeds)?
-                }
-                None => {
-                    let seeds = Vec::<Vec<u8>>::with_capacity(0);
-                    bincode::serialize(&seeds)?
-                }
-            };
-
-            // Start experiment
+                .ok_or_else(|| anyhow!("Blueprint path had invalid parent"))?
+                .to_path_buf();
 
             let id = nanoid!(8);
 
@@ -136,33 +85,85 @@ fn main() -> Result<()> {
             bthread_sock.bind("inproc://broker_loop")?;
 
             let bthread = thread::spawn(move || -> Result<()> {
+                let id_b = id.as_bytes();
+
                 let tui_sock = ctx.socket(zmq::PAIR)?;
                 tui_sock.connect("inproc://broker_loop")?;
 
                 let broker_sock = ctx.socket(zmq::DEALER)?;
                 broker_sock.set_linger(0)?;
+                broker_sock.set_identity(id_b)?;
                 broker_sock.connect(&broker_url)?;
 
-                broker_sock.send("ping", 0)?;
-                if broker_sock.poll(zmq::POLLIN, 5000)? > 0 {
-                    if broker_sock.recv_bytes(0)?.starts_with(b"pong") {
-                        info!("🔗 Connected to Squid broker at {}", &broker_url);
-                    }
-                } else {
-                    error!("Squid broker was unresponsive at {}", &broker_url);
+                if let Err(e) = ping_broker(&broker_sock, &broker_url) {
+                    error!("{}", e.to_string());
                     tui_sock.send("crashed", 0)?;
                     return Ok(());
                 }
 
+                // Create outdir
+
+                let mut out_dir = parent_path.join(&blueprint.experiment.out_dir);
+                if !out_dir.exists() {
+                    fs::create_dir_all(&out_dir)?;
+                }
+
+                let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+                out_dir.push(timestamp);
+
+                fs::create_dir(&out_dir)?;
+                fs::create_dir(out_dir.join("agents"))?;
+
+                fs::write(
+                    out_dir.join("population_parameters.txt"),
+                    blueprint.ga.display(),
+                )?;
+
+                // Create CSV files and write headers
+
+                let data_dir = out_dir.join("data");
+                fs::create_dir(&data_dir)?;
+
+                fs::write(data_dir.join("fitness_scores.csv"), "avg,best\n")?;
+
+                if let Some(ref csv_data) = blueprint.csv_data {
+                    for (name, headers) in csv_data {
+                        fs::write(
+                            data_dir.join(name).with_extension("csv"),
+                            format!("gen,{}\n", headers.join(",")),
+                        )?;
+                    }
+                }
+
+                // Check for optional seeds
+
+                let seeds_b = match blueprint.experiment.seed_dir {
+                    Some(ref path) => {
+                        let seeds_dir = parent_path.join(path);
+                        let population_size = blueprint.ga.population_size;
+                        let seeds = read_agents_from_dir(&seeds_dir, population_size)?;
+                        info!(
+                            "🔧 Seeding population from `{}`",
+                            seeds_dir.canonicalize()?.display()
+                        );
+                        bincode::serialize(&seeds)?
+                    }
+                    None => {
+                        let seeds = Vec::<Vec<u8>>::with_capacity(0);
+                        bincode::serialize(&seeds)?
+                    }
+                };
+
                 info!("🧪 Starting experiment {}", &id);
 
-                broker_sock.send_multipart([b"run", id.as_bytes(), &blueprint_b, &seeds_b], 0)?;
+                // TODO get rid wtf
+                // let cmd: &[u8] = if *test { b"test" } else { b"run" };
+                broker_sock.send_multipart([b"run", id_b, &blueprint_b, &seeds_b], 0)?;
 
                 let mut sockets = [
                     broker_sock.as_poll_item(zmq::POLLIN),
                     tui_sock.as_poll_item(zmq::POLLIN),
                 ];
-                let id_b = id.as_bytes();
 
                 loop {
                     match broker_loop(&mut sockets, &broker_sock, &tui_sock, id_b, &out_dir) {
@@ -186,8 +187,8 @@ fn main() -> Result<()> {
         }
         Commands::Abort => {
             let ctx = zmq::Context::new();
-            let broker_url = std::env::var("SQUID_BROKER_DEALER_URL")
-                .context("$SQUID_BROKER_DEALER_URL not set")?;
+            let broker_url = std::env::var("SQUID_BROKER_FE_SOCK_URL")
+                .context("$SQUID_BROKER_FE_SOCK_URL not set")?;
             // Abort cmd is temporary so just blocking and assuming it will connect
             let broker_sock = ctx.socket(zmq::DEALER)?;
             broker_sock.connect(&broker_url)?;
@@ -281,9 +282,10 @@ fn broker_loop(
                 return Ok(ControlFlow::Break(()));
             }
             b"error" => {
-                let msg = str::from_utf8(&msgb[2])?;
+                let msg = str::from_utf8(&msgb[1])?;
                 error!("Broker error: {}", msg);
                 tui_sock.send("crashed", 0)?;
+                return Ok(ControlFlow::Break(()));
                 // TODO: determine if fatal and recover?
             }
             _ => (),
@@ -298,6 +300,30 @@ fn broker_loop(
     }
 
     Ok(ControlFlow::Continue(()))
+}
+
+fn ping_broker(broker_sock: &zmq::Socket, broker_url: &str) -> Result<()> {
+    broker_sock.send("status", 0)?;
+    if broker_sock.poll(zmq::POLLIN, 5000)? > 0 {
+        let msgb = broker_sock.recv_multipart(0)?;
+        let status = msgb[1].as_slice();
+        match status {
+            b"idle" => info!("🔗 Connected to Squid broker at {}", broker_url),
+            b"busy" => bail!(
+                "Squid broker is busy with another experiment at {}",
+                broker_url
+            ),
+            x => bail!(
+                "Squid broker sent invalid status ({}) from {}",
+                str::from_utf8(x)?,
+                broker_url
+            ),
+        }
+    } else {
+        bail!("Squid broker was unresponsive at {}", broker_url);
+    }
+
+    Ok(())
 }
 
 fn read_agents_from_dir(dir: &Path, population_size: usize) -> Result<Vec<Vec<u8>>> {
