@@ -17,9 +17,19 @@ pub fn pull(image: &str) -> io::Result<bool> {
     Ok(result.success())
 }
 
-pub fn run(image: &str, label: &str, id: &str) -> io::Result<Child> {
+pub fn run(image: &str, broker_wk_env: &str, label: &str, id: &str) -> io::Result<Child> {
     Command::new("docker")
-        .args(["run", "--rm", "-d", "-l", label, image, id])
+        .args([
+            "run",
+            "--rm",
+            "-d",
+            "-e",
+            broker_wk_env,
+            "-l",
+            label,
+            image,
+            id,
+        ])
         .spawn()
 }
 

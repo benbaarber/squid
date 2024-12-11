@@ -22,8 +22,14 @@ fn main() -> Result<()> {
 
     assert!(docker::is_installed()?);
 
-    let broker_url =
-        std::env::var("SQUID_BROKER_MG_SOCK_URL").context("$SQUID_BROKER_MG_SOCK_URL not set")?;
+    let broker_url = std::env::var("SQUID_BROKER_URL").context("$SQUID_BROKER_URL not set")?;
+    let mg_sock_url = format!("{}:5556", &broker_url);
+
+    let broker_wk_env = if broker_url != "tcp://localhost" {
+        format!("SQUID_BROKER_WK_SOCK_URL={}:5557", &broker_url)
+    } else {
+        "SQUID_BROKER_WK_SOCK_URL=tcp://172.17.0.1:5557".to_string()
+    };
 
     let _status = ManagerStatus::Idle;
     let cpus = num_cpus::get();
@@ -35,7 +41,7 @@ fn main() -> Result<()> {
 
     let ctx = zmq::Context::new();
     let broker_sock = ctx.socket(zmq::DEALER)?;
-    broker_sock.connect(&broker_url)?;
+    broker_sock.connect(&mg_sock_url)?;
 
     broker_sock.send_multipart(
         [
@@ -61,7 +67,7 @@ fn main() -> Result<()> {
     }
 
     loop {
-        let res = manager_loop(num_containers, args.local, &broker_sock);
+        let res = manager_loop(num_containers, args.local, &broker_wk_env, &broker_sock);
         if let Err(e) = res {
             let _ = send_status(&broker_sock, ManagerStatus::Crashed);
             eprintln!("Error: {}", &e);
@@ -69,7 +75,12 @@ fn main() -> Result<()> {
     }
 }
 
-fn manager_loop(num_containers: usize, local: bool, broker_sock: &zmq::Socket) -> Result<()> {
+fn manager_loop(
+    num_containers: usize,
+    local: bool,
+    broker_wk_env: &str,
+    broker_sock: &zmq::Socket,
+) -> Result<()> {
     let msgb = broker_sock.recv_multipart(0)?;
     let cmd = msgb[0].as_slice();
     match cmd {
@@ -92,7 +103,7 @@ fn manager_loop(num_containers: usize, local: bool, broker_sock: &zmq::Socket) -
 
             let label = format!("squid_id={}", id);
             for _ in 0..num_containers {
-                docker::run(task_image, &label, id)?;
+                docker::run(task_image, broker_wk_env, &label, id)?;
             }
         }
         b"abort" => {
