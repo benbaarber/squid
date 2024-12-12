@@ -13,14 +13,14 @@ The loop terminates when there are no more agents to simulate.
 
 ## Installation
 
-To install this package locally, first configure your shell environment:
+To install this package locally, first configure your shell environment (.env):
 
 ```sh
 export GITLAB_PACKAGE_TOKEN='<your gitlab personal access token>' # must have 'api' scope
 export SQUID_PACKAGE_URL="https://__token__:$GITLAB_PACKAGE_TOKEN@gitlab.com/api/v4/projects/64429395/packages/pypi/simple"
 ```
 
-Then run `pip install squid --index-url $SQUID_PACKAGE_URL`
+Source the environment variables, then run `pip install squid --index-url $SQUID_PACKAGE_URL`
 
 ## Usage
 

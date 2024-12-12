@@ -20,7 +20,7 @@ use shared::{de_usize, Blueprint, PopEvaluation};
 use viz::App;
 
 #[derive(Parser)]
-#[command(about = "Squid CLI client")]
+#[command(about = "Squid Client CLI")]
 struct Args {
     #[command(subcommand)]
     command: Commands,
