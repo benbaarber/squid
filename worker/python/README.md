@@ -13,14 +13,27 @@ The loop terminates when there are no more agents to simulate.
 
 ## Installation
 
-To install this package locally, first configure your shell environment (.env):
+### With SSH
+
+If your ssh key is linked to gitlab, and you have your ssh-agent set up, simply run:
 
 ```sh
-export GITLAB_PACKAGE_TOKEN='<your gitlab personal access token>' # must have 'api' scope
-export SQUID_PACKAGE_URL="https://__token__:$GITLAB_PACKAGE_TOKEN@gitlab.com/api/v4/projects/64429395/packages/pypi/simple"
+pip install "git+ssh://git@gitlab.com/VivumComputing/scientific/robotics/dnfs/evolution/squid.git#egg=squid&subdirectory=api/python"
 ```
 
-Source the environment variables, then run `pip install squid --index-url $SQUID_PACKAGE_URL`
+### With HTTPS
+
+First configure your shell environment:
+
+```sh
+export GITLAB_TOKEN='<your gitlab personal access token>' # must have at least `read_repository` scope
+```
+
+Then run:
+
+```sh
+pip install "git+https://${GITLAB_TOKEN}@gitlab.com/VivumComputing/scientific/robotics/dnfs/evolution/squid.git#egg=squid&subdirectory=api/python"
+```
 
 ## Usage
 
@@ -78,30 +91,6 @@ Source the environment variables, then run `pip install squid --index-url $SQUID
 - `orjson`
 
 ## Development
-
-### Publishing the package
-
-To publish a new version of the package to the GitLab package registry, first configure your shell environment:
-
-```sh
-export WORKDIR="$(pwd)" # root of this repository
-
-export TWINE_USERNAME='__token__'
-export TWINE_PASSWORD='<your gitlab personal access token>' # must have 'api' scope
-export TWINE_REPOSITORY_URL='https://gitlab.com/api/v4/projects/64429395/packages/pypi'
-
-squid-python-publish() {
-  cd $WORKDIR/api/python
-  rm -r dist
-  python -m build
-  twine upload dist/*
-  cd -
-}
-```
-
-Then, bump the version of the package in the `pyproject.toml` file (bump according to semantic versioning).
-
-Then simply run `squid-python-publish`.
 
 ### Running it standalone
 
