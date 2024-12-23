@@ -1,4 +1,5 @@
 mod logger;
+mod template;
 mod viz;
 
 use core::str;
@@ -28,6 +29,11 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Initialize a new squid experiment in the current directory, or in a new one if a path is specified
+    Init {
+        /// Path to initialize in
+        path: Option<PathBuf>,
+    },
     /// Run an experiment
     Run {
         /// Blueprint file
@@ -37,7 +43,7 @@ enum Commands {
         // #[arg(short, long)]
         // test: bool,
     },
-    /// Abort the running experiment
+    /// Abort the running experiment (deprecated)
     Abort,
     // {
     //     /// Experiment id, printed after calling `squid run`
@@ -55,12 +61,36 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     match &args.command {
+        Commands::Init { path } => {
+            let path = match path {
+                Some(path) => {
+                    fs::create_dir_all(path)?;
+                    path
+                }
+                None => Path::new("."),
+            };
+
+            fs::write(path.join("blueprint.toml"), template::BLUEPRINT)?;
+            fs::write(path.join(".env"), template::DOTENV)?;
+            fs::write(path.join("Dockerfile"), template::DOCKERFILE)?;
+            fs::write(path.join("requirements.txt"), template::REQUIREMENTSTXT)?;
+            fs::write(path.join(".gitignore"), template::GITIGNORE)?;
+
+            let sim_dir = path.join("simulation");
+            fs::create_dir(&sim_dir)?;
+            fs::write(sim_dir.join("main.py"), template::MAINPY)?;
+
+            println!(
+                "🦑 Initialized Squid project in {}",
+                path.canonicalize()?.display()
+            );
+        }
         Commands::Run { blueprint: bpath } => {
             let logs = logger::init();
             let ctx = zmq::Context::new();
 
-            let broker_url = std::env::var("SQUID_BROKER_FE_SOCK_URL")
-                .context("$SQUID_BROKER_FE_SOCK_URL not set")?;
+            let broker_url =
+                std::env::var("SQUID_BROKER_URL").context("$SQUID_BROKER_URL not set")? + ":5555";
 
             let blueprint_s = fs::read_to_string(bpath)
                 .with_context(|| format!("Failed to open blueprint file `{}`", bpath.display()))?;
@@ -187,8 +217,8 @@ fn main() -> Result<()> {
         }
         Commands::Abort => {
             let ctx = zmq::Context::new();
-            let broker_url = std::env::var("SQUID_BROKER_FE_SOCK_URL")
-                .context("$SQUID_BROKER_FE_SOCK_URL not set")?;
+            let broker_url =
+                std::env::var("SQUID_BROKER_URL").context("$SQUID_BROKER_URL not set")? + ":5555";
             // Abort cmd is temporary so just blocking and assuming it will connect
             let broker_sock = ctx.socket(zmq::DEALER)?;
             broker_sock.connect(&broker_url)?;
