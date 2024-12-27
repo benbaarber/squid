@@ -70,8 +70,18 @@ fn main() -> Result<()> {
                 None => Path::new("."),
             };
 
+            println!(
+                "🦑 Initializing a new Squid project in {}",
+                path.canonicalize()?.display()
+            );
+
+            let gitlab_token = inquire::Password::new("Enter your GitLab personal access token:")
+                .without_confirmation()
+                .prompt()
+                .unwrap();
+
             fs::write(path.join("blueprint.toml"), template::BLUEPRINT)?;
-            fs::write(path.join(".env"), template::DOTENV)?;
+            fs::write(path.join(".env"), template::make_dotenv(&gitlab_token))?;
             fs::write(path.join("Dockerfile"), template::DOCKERFILE)?;
             fs::write(path.join("requirements.txt"), template::REQUIREMENTSTXT)?;
             fs::write(path.join(".gitignore"), template::GITIGNORE)?;

@@ -1,6 +1,11 @@
-pub const DOTENV: &str = r#"export GITLAB_TOKEN='<your gitlab personal access token>'
+pub fn make_dotenv(gitlab_token: &str) -> String {
+    format!(
+        r#"export GITLAB_TOKEN='{}'
 export SQUID_BROKER_URL='tcp://localhost:5555'
-"#;
+"#,
+        gitlab_token
+    )
+}
 
 pub const BLUEPRINT: &str = r#"[experiment]
 task_image = "docker.io/library/example"
