@@ -1,7 +1,7 @@
 pub fn make_dotenv(gitlab_token: &str) -> String {
     format!(
         r#"export GITLAB_TOKEN='{}'
-export SQUID_BROKER_URL='tcp://localhost:5555'
+export SQUID_BROKER_URL='tcp://localhost'
 "#,
         gitlab_token
     )
@@ -51,7 +51,7 @@ ENV PYTHONPATH='/app'
 ENTRYPOINT [ "python", "simulation/main.py" ]
 "#;
 
-pub const REQUIREMENTSTXT: &str = "git+https://${GITLAB_TOKEN}@gitlab.com/VivumComputing/scientific/robotics/dnfs/evolution/squid.git#egg=squid&subdirectory=api/python\n";
+pub const REQUIREMENTSTXT: &str = "git+https://__token__:${GITLAB_TOKEN}@gitlab.com/VivumComputing/scientific/robotics/dnfs/evolution/squid.git#egg=squid&subdirectory=worker/python\n";
 
 pub const MAINPY: &str = r#"import squid
 
