@@ -11,13 +11,13 @@ use std::{
     thread,
 };
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::Local;
 use clap::{Parser, Subcommand};
 use log::{error, info};
 use nanoid::nanoid;
 use serde_json::Value;
-use shared::{de_usize, Blueprint, PopEvaluation};
+use shared::{bail_assert, de_usize, docker, env, Blueprint, PopEvaluation};
 use viz::App;
 
 #[derive(Parser)]
@@ -32,13 +32,14 @@ enum Commands {
     /// Initialize a new squid experiment in the current directory, or in a new one if a path is specified
     Init {
         /// Path to initialize in
-        path: Option<PathBuf>,
+        #[arg(default_value = ".")]
+        path: PathBuf,
     },
     /// Run an experiment
     Run {
-        /// Blueprint file
-        #[arg(short, long, value_name = "FILE", default_value = "./blueprint.toml")]
-        blueprint: PathBuf,
+        /// Path to squid project directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
         // /// Run in test mode (spawns a single worker container locally and simulates a single agent)
         // #[arg(short, long)]
         // test: bool,
@@ -62,30 +63,12 @@ fn main() -> Result<()> {
 
     match &args.command {
         Commands::Init { path } => {
-            let path = match path {
-                Some(path) => {
-                    fs::create_dir_all(path)?;
-                    path
-                }
-                None => Path::new("."),
-            };
-
-            println!(
-                "🦑 Initializing a new Squid project in {}",
-                path.canonicalize()?.display()
-            );
-
-            let gitlab_token = inquire::Password::new("Enter your GitLab personal access token:")
-                .without_confirmation()
-                .prompt()
-                .unwrap();
-
+            fs::create_dir_all(path)?;
             fs::write(path.join("blueprint.toml"), template::BLUEPRINT)?;
-            fs::write(path.join(".env"), template::make_dotenv(&gitlab_token))?;
+            fs::write(path.join(".env"), template::DOTENV)?;
             fs::write(path.join("Dockerfile"), template::DOCKERFILE)?;
-            fs::write(path.join("requirements.txt"), template::REQUIREMENTSTXT)?;
+            fs::write(path.join("requirements.txt"), "")?;
             fs::write(path.join(".gitignore"), template::GITIGNORE)?;
-
             let sim_dir = path.join("simulation");
             fs::create_dir(&sim_dir)?;
             fs::write(sim_dir.join("main.py"), template::MAINPY)?;
@@ -95,116 +78,127 @@ fn main() -> Result<()> {
                 path.canonicalize()?.display()
             );
         }
-        Commands::Run { blueprint: bpath } => {
-            let logs = logger::init();
+        Commands::Run { path } => {
+            bail_assert!(docker::is_installed()?, "Docker must be installed");
+
+            let bpath = path.join("blueprint.toml");
+            bail_assert!(
+                path.join("blueprint.toml").exists(),
+                "Invalid Squid project: No `blueprint.toml` found in {}",
+                path.canonicalize()?.display()
+            );
+            bail_assert!(
+                path.join("Dockerfile").exists(),
+                "Invalid Squid project: No `Dockerfile` found in {}",
+                path.canonicalize()?.display()
+            );
+
             let ctx = zmq::Context::new();
+            let logs = logger::init();
+            let broker_url = env("SQUID_BROKER_URL")? + ":5555";
 
-            let broker_url =
-                std::env::var("SQUID_BROKER_URL").context("$SQUID_BROKER_URL not set")? + ":5555";
+            // Ping broker
 
-            let blueprint_s = fs::read_to_string(bpath)
+            if let Err(e) = ping_broker(&ctx, &broker_url) {
+                eprintln!("{}", e.to_string());
+                return Ok(());
+            }
+
+            // Read blueprint
+
+            let blueprint_s = fs::read_to_string(&bpath)
                 .with_context(|| format!("Failed to open blueprint file `{}`", bpath.display()))?;
             let blueprint: Blueprint = toml::from_str(&blueprint_s)
                 .with_context(|| format!("Failed to parse blueprint file `{}`", bpath.display()))?;
-            let blueprint_b = fs::read(bpath).expect("Blueprint file already validated");
-
+            let blueprint_b = fs::read(&bpath).expect("Blueprint file already validated");
             info!("🔧 Read blueprint from `{}`", bpath.display());
-
             blueprint.validate()?;
 
-            let parent_path = bpath
-                .parent()
-                .ok_or_else(|| anyhow!("Blueprint path had invalid parent"))?
-                .to_path_buf();
+            // Build and push docker image
+
+            let task_image = blueprint.experiment.task_image.as_str();
+            if !docker::build(task_image, path.to_str().unwrap())?.success() {
+                // failure message
+                bail!("Failed to build docker image");
+            }
+            if !task_image.starts_with("docker.io/library/")
+                && !docker::push(&task_image)?.success()
+            {
+                // failure message
+                bail!("Failed to push docker image to {}", task_image);
+            }
+
+            // Create outdir
+
+            let mut out_dir = path.join(&blueprint.experiment.out_dir);
+            if !out_dir.exists() {
+                fs::create_dir_all(&out_dir)?;
+            }
+            let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+            out_dir.push(timestamp);
+            fs::create_dir(&out_dir)?;
+            fs::create_dir(out_dir.join("agents"))?;
+            fs::write(
+                out_dir.join("population_parameters.txt"),
+                blueprint.ga.display(),
+            )?;
+
+            let data_dir = out_dir.join("data");
+            fs::create_dir(&data_dir)?;
+            fs::write(data_dir.join("fitness_scores.csv"), "avg,best\n")?;
+
+            if let Some(ref csv_data) = blueprint.csv_data {
+                for (name, headers) in csv_data {
+                    fs::write(
+                        data_dir.join(name).with_extension("csv"),
+                        format!("gen,{}\n", headers.join(",")),
+                    )?;
+                }
+            }
+
+            // Check for optional seeds
+
+            let seeds_b = match blueprint.experiment.seed_dir {
+                Some(ref seed_dir) => {
+                    let seed_dir = path.join(seed_dir);
+                    let population_size = blueprint.ga.population_size;
+                    let seeds = read_agents_from_dir(&seed_dir, population_size)?;
+                    info!(
+                        "🔧 Seeding population from `{}`",
+                        seed_dir.canonicalize()?.display()
+                    );
+                    bincode::serialize(&seeds)?
+                }
+                None => {
+                    let seeds = Vec::<Vec<u8>>::with_capacity(0);
+                    bincode::serialize(&seeds)?
+                }
+            };
+
+            // Start TUI
 
             let id = nanoid!(8);
-
             let mut app = App::new(&blueprint, id.clone(), logs).context("TUI failed to start")?;
+
+            // Start experiment in thread
 
             let bthread_sock = ctx.socket(zmq::PAIR)?;
             bthread_sock.bind("inproc://broker_loop")?;
-
             let bthread = thread::spawn(move || -> Result<()> {
                 let id_b = id.as_bytes();
-
                 let tui_sock = ctx.socket(zmq::PAIR)?;
                 tui_sock.connect("inproc://broker_loop")?;
-
                 let broker_sock = ctx.socket(zmq::DEALER)?;
-                broker_sock.set_linger(0)?;
                 broker_sock.set_identity(id_b)?;
                 broker_sock.connect(&broker_url)?;
 
-                if let Err(e) = ping_broker(&broker_sock, &broker_url) {
-                    error!("{}", e.to_string());
-                    tui_sock.send("crashed", 0)?;
-                    return Ok(());
-                }
-
-                // Create outdir
-
-                let mut out_dir = parent_path.join(&blueprint.experiment.out_dir);
-                if !out_dir.exists() {
-                    fs::create_dir_all(&out_dir)?;
-                }
-
-                let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
-                out_dir.push(timestamp);
-
-                fs::create_dir(&out_dir)?;
-                fs::create_dir(out_dir.join("agents"))?;
-
-                fs::write(
-                    out_dir.join("population_parameters.txt"),
-                    blueprint.ga.display(),
-                )?;
-
-                // Create CSV files and write headers
-
-                let data_dir = out_dir.join("data");
-                fs::create_dir(&data_dir)?;
-
-                fs::write(data_dir.join("fitness_scores.csv"), "avg,best\n")?;
-
-                if let Some(ref csv_data) = blueprint.csv_data {
-                    for (name, headers) in csv_data {
-                        fs::write(
-                            data_dir.join(name).with_extension("csv"),
-                            format!("gen,{}\n", headers.join(",")),
-                        )?;
-                    }
-                }
-
-                // Check for optional seeds
-
-                let seeds_b = match blueprint.experiment.seed_dir {
-                    Some(ref path) => {
-                        let seeds_dir = parent_path.join(path);
-                        let population_size = blueprint.ga.population_size;
-                        let seeds = read_agents_from_dir(&seeds_dir, population_size)?;
-                        info!(
-                            "🔧 Seeding population from `{}`",
-                            seeds_dir.canonicalize()?.display()
-                        );
-                        bincode::serialize(&seeds)?
-                    }
-                    None => {
-                        let seeds = Vec::<Vec<u8>>::with_capacity(0);
-                        bincode::serialize(&seeds)?
-                    }
-                };
-
                 info!("🧪 Starting experiment {}", &id);
-
-                // TODO get rid wtf
-                // let cmd: &[u8] = if *test { b"test" } else { b"run" };
                 broker_sock.send_multipart([b"run", id_b, &blueprint_b, &seeds_b], 0)?;
 
                 let mut sockets = [
                     broker_sock.as_poll_item(zmq::POLLIN),
                     tui_sock.as_poll_item(zmq::POLLIN),
                 ];
-
                 loop {
                     match broker_loop(&mut sockets, &broker_sock, &tui_sock, id_b, &out_dir) {
                         Ok(ControlFlow::Break(_)) => break,
@@ -227,8 +221,7 @@ fn main() -> Result<()> {
         }
         Commands::Abort => {
             let ctx = zmq::Context::new();
-            let broker_url =
-                std::env::var("SQUID_BROKER_URL").context("$SQUID_BROKER_URL not set")? + ":5555";
+            let broker_url = env("SQUID_BROKER_URL")? + ":5555";
             // Abort cmd is temporary so just blocking and assuming it will connect
             let broker_sock = ctx.socket(zmq::DEALER)?;
             broker_sock.connect(&broker_url)?;
@@ -240,9 +233,7 @@ fn main() -> Result<()> {
                 .with_context(|| format!("Failed to open blueprint file `{}`", bpath.display()))?;
             let blueprint: Blueprint = toml::from_str(&blueprint_s)
                 .with_context(|| format!("Failed to parse blueprint file `{}`", bpath.display()))?;
-
             blueprint.validate()?;
-
             println!("✅ Validated blueprint from `{}`", bpath.display());
         }
     }
@@ -261,7 +252,6 @@ fn broker_loop(
 
     if sockets[0].is_readable() {
         let msgb = broker_sock.recv_multipart(0)?;
-
         let cmd = msgb[0].as_slice();
         // let _id = str::from_utf8(&msgb[1])?;
         match cmd {
@@ -287,7 +277,6 @@ fn broker_loop(
                         let agents_dir = out_dir.join("agents");
                         let agents: Vec<String> = bincode::deserialize(&msgb[3])
                             .context("bincode failed to deserialize agents")?;
-
                         for (i, agent) in agents.into_iter().enumerate() {
                             let path = agents_dir.join(format!("agent_{}.json", i));
                             fs::write(path, agent)?;
@@ -299,7 +288,6 @@ fn broker_loop(
                         let data: HashMap<String, Vec<Vec<Option<f64>>>> =
                             serde_json::from_slice(&msgb[4])
                                 .context("serde_json failed to parse additional sim data")?;
-
                         for (name, rows) in data {
                             let path = data_dir.join(&name).with_extension("csv");
                             let file = OpenOptions::new().append(true).open(path)?;
@@ -342,10 +330,13 @@ fn broker_loop(
     Ok(ControlFlow::Continue(()))
 }
 
-fn ping_broker(broker_sock: &zmq::Socket, broker_url: &str) -> Result<()> {
-    broker_sock.send("status", 0)?;
-    if broker_sock.poll(zmq::POLLIN, 5000)? > 0 {
-        let msgb = broker_sock.recv_multipart(0)?;
+fn ping_broker(ctx: &zmq::Context, broker_url: &str) -> Result<()> {
+    let temp_sock = ctx.socket(zmq::DEALER)?;
+    temp_sock.set_linger(0)?;
+    temp_sock.connect(broker_url)?;
+    temp_sock.send("status", 0)?;
+    if temp_sock.poll(zmq::POLLIN, 5000)? > 0 {
+        let msgb = temp_sock.recv_multipart(0)?;
         let status = msgb[1].as_slice();
         match status {
             b"idle" => info!("🔗 Connected to Squid broker at {}", broker_url),
@@ -369,9 +360,7 @@ fn ping_broker(broker_sock: &zmq::Socket, broker_url: &str) -> Result<()> {
 fn read_agents_from_dir(dir: &Path, population_size: usize) -> Result<Vec<Vec<u8>>> {
     let entries = fs::read_dir(dir)
         .with_context(|| format!("Failed to read directory: {}", dir.display()))?;
-
     let mut agents = Vec::with_capacity(population_size);
-
     for (i, entry) in entries.enumerate() {
         if i >= population_size {
             break;
@@ -380,7 +369,6 @@ fn read_agents_from_dir(dir: &Path, population_size: usize) -> Result<Vec<Vec<u8
         let entry = entry
             .with_context(|| format!("Failed to read directory entry at `{}`", dir.display()))?;
         let path = entry.path();
-
         if !path.is_file() {
             bail!("Found non-file entry: `{}`", path.display());
         }
@@ -391,7 +379,6 @@ fn read_agents_from_dir(dir: &Path, population_size: usize) -> Result<Vec<Vec<u8
         let json: Value = serde_json::from_reader(file)
             .with_context(|| format!("Failed to parse json from file: `{}`", path.display()))?;
         let content = serde_json::to_vec(&json)?;
-
         agents.push(content);
     }
 

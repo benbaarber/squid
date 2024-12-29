@@ -1,3 +1,5 @@
+pub mod docker;
+
 use std::{collections::HashMap, path::PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -54,6 +56,10 @@ pub enum ManagerStatus {
 
 // util functions
 
+pub fn env(key: &str) -> Result<String> {
+    std::env::var(key).with_context(|| format!("${} not set", key))
+}
+
 pub fn de_usize(frame: &[u8]) -> Result<usize> {
     Ok(de_u32(frame)? as usize)
 }
@@ -74,6 +80,7 @@ pub fn de_f64(frame: &[u8]) -> Result<f64> {
     Ok(f64::from_le_bytes(bytes))
 }
 
+#[macro_export]
 macro_rules! bail_assert {
     ($cond:expr) => {
         if !$cond {

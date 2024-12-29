@@ -1,10 +1,8 @@
-mod docker;
-
 use core::str;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use clap::Parser;
-use shared::ManagerStatus;
+use shared::{docker, env, ManagerStatus};
 
 #[derive(Parser)]
 #[command(about = "Squid Manager")]
@@ -22,9 +20,8 @@ fn main() -> Result<()> {
 
     assert!(docker::is_installed()?);
 
-    let broker_url = std::env::var("SQUID_BROKER_URL").context("$SQUID_BROKER_URL not set")?;
+    let broker_url = env("SQUID_BROKER_URL")?;
     let mg_sock_url = format!("{}:5556", &broker_url);
-
     let broker_wk_env = if broker_url != "tcp://localhost" {
         format!("SQUID_BROKER_WK_SOCK_URL={}:5557", &broker_url)
     } else {
@@ -88,17 +85,13 @@ fn manager_loop(
             let id = str::from_utf8(&msgb[1])?;
             println!("SPAWN ID: {}", id);
             let task_image = str::from_utf8(&msgb[2])?;
-
             if !local {
                 send_status(broker_sock, ManagerStatus::Pulling)?;
-
-                let success = docker::pull(task_image)?;
-                if !success {
+                if !docker::pull(task_image)?.success() {
                     send_status(broker_sock, ManagerStatus::Crashed)?;
                     return Ok(());
                 }
             }
-
             send_status(broker_sock, ManagerStatus::Active)?;
 
             let label = format!("squid_id={}", id);
@@ -109,7 +102,6 @@ fn manager_loop(
         b"abort" => {
             let id = str::from_utf8(&msgb[1])?;
             println!("ABORT ID: {}", id);
-
             docker::kill_all(id)?;
         }
         _ => (),

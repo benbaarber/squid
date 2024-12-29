@@ -1,20 +1,30 @@
 use std::{
     io,
-    process::{Child, Command},
+    process::{Child, Command, ExitStatus, Stdio},
 };
 
 pub fn is_installed() -> io::Result<bool> {
-    let result = Command::new("which").arg("docker").status()?;
+    let result = Command::new("which")
+        .arg("docker")
+        .stdout(Stdio::null())
+        .status()?;
     Ok(result.success())
 }
 
-pub fn pull(image: &str) -> io::Result<bool> {
-    let result = Command::new("docker")
-        .args(["pull", image])
+pub fn build(image: &str, path: &str) -> io::Result<ExitStatus> {
+    Command::new("docker")
+        .args(["build", "--ssh", "default", "-t", image, path])
+        .env("DOCKER_BUILDKIT", "1")
         .spawn()?
-        .wait()?;
+        .wait()
+}
 
-    Ok(result.success())
+pub fn push(image: &str) -> io::Result<ExitStatus> {
+    Command::new("docker").args(["push", image]).spawn()?.wait()
+}
+
+pub fn pull(image: &str) -> io::Result<ExitStatus> {
+    Command::new("docker").args(["pull", image]).spawn()?.wait()
 }
 
 pub fn run(image: &str, broker_wk_env: &str, label: &str, id: &str) -> io::Result<Child> {
