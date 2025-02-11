@@ -7,6 +7,5 @@ edition = "2021"
 anyhow.workspace = true
 bincode.workspace = true
 clap.workspace = true
-num_cpus = "1.16.0"
 shared.workspace = true
 zmq.workspace = true

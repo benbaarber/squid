@@ -10,8 +10,12 @@ use ga::{
 };
 use serde::Deserialize;
 use shared::{de_f64, de_usize, Blueprint, ManagerStatus};
-use std::{collections::HashMap, thread, time::Instant};
-use util::de_router_id;
+use std::{
+    collections::HashMap,
+    thread,
+    time::{Duration, Instant},
+};
+use util::{de_router_id, to_router_id_array};
 
 struct Manager {
     last_pulse: Instant,
@@ -21,8 +25,8 @@ struct Manager {
 
 /// Map of router identities to manager state
 ///
-/// Keys are serialized u32s with a null byte at the start (byte vec of length 5)
-type Managers = HashMap<Vec<u8>, Manager>;
+/// Keys are serialized u32s with a null byte at the start (byte array of length 5)
+type Managers = HashMap<[u8; 5], Manager>;
 
 fn main() -> Result<()> {
     println!("🦑 Broker starting up...");
@@ -41,7 +45,9 @@ fn main() -> Result<()> {
     let exp_sock = ctx.socket(zmq::PAIR)?;
     exp_sock.bind("inproc://experiment")?;
 
+    let ctx_clone = ctx.clone();
     let _exp_thread = thread::spawn(move || -> Result<()> {
+        let ctx = ctx_clone;
         let main_sock = ctx.socket(zmq::PAIR)?;
         main_sock.connect("inproc://experiment")?;
 
@@ -49,8 +55,7 @@ fn main() -> Result<()> {
         wk_router.bind("tcp://*:5557")?;
 
         loop {
-            let res = experiment_loop(&main_sock, &wk_router);
-            if let Err(e) = res {
+            if let Err(e) = experiment_loop(&main_sock, &wk_router) {
                 eprintln!("Error: {:?}", &e);
                 main_sock.send_multipart(
                     [
@@ -70,150 +75,162 @@ fn main() -> Result<()> {
         exp_sock.as_poll_item(zmq::POLLIN),
     ];
 
+    const HB_INTERVAL: Duration = Duration::from_secs(5);
+    const MG_TTL: Duration = Duration::from_secs(15);
+    let mut last_heartbeat = Instant::now();
+
+    let mut main_loop = || -> Result<()> {
+        if last_heartbeat.elapsed() > HB_INTERVAL {
+            managers.retain(|id, mg| {
+                if mg.last_pulse.elapsed() > MG_TTL {
+                    println!("⛓️‍💥 Lost manager {:x}", de_router_id(id).unwrap(),);
+                    return false;
+                };
+                mg_router.send_multipart([id, "hb".as_bytes()], 0).unwrap();
+                true
+            });
+            *last_heartbeat = Instant::now();
+        }
+
+        let timeout = HB_INTERVAL
+            .checked_sub(last_heartbeat.elapsed())
+            .map(|x| x.as_millis() as i64)
+            .unwrap_or(0)
+            .max(1);
+
+        zmq::poll(&mut sockets, timeout)?;
+
+        if sockets[0].is_readable() {
+            let msgb = fe_router.recv_multipart(0)?;
+            let client = &msgb[0];
+            let cmd = msgb[1].as_slice();
+            match cmd {
+                b"ping" => fe_router.send_multipart([client.as_slice(), b"pong"], 0)?,
+                b"status" => {
+                    let status: &[u8] = if cur_id.is_some() { b"busy" } else { b"idle" };
+                    fe_router.send_multipart([client.as_slice(), b"status", status], 0)?;
+                }
+                b"run" => {
+                    println!("🧪 Starting experiment {}", str::from_utf8(client)?);
+                    *cur_id = Some(client.clone());
+                    exp_sock.send_multipart(&msgb[1..], 0)?;
+                }
+                b"abort" => {
+                    if let Some(id) = cur_id {
+                        println!("🧪 Aborting experiment {}", str::from_utf8(&id)?);
+                        // let abort_id = &msgb[1];
+                        let abort_id = id.as_slice();
+                        // if abort_id == id {
+                        broadcast_managers(&managers, &mg_router, &["abort".as_bytes(), abort_id])?;
+                        exp_sock.send("abort", 0)?;
+                        fe_router.send_multipart([id.as_slice(), b"done", abort_id], 0)?;
+                        *cur_id = None;
+                        // } else {
+                        //     println!("Ignoring abort signal due to ID mismatch");
+                        // }
+                    } else {
+                        println!("Ignoring abort signal, no experiments running");
+                    }
+                }
+                _ => (),
+            }
+        }
+
+        if sockets[1].is_readable() {
+            let msgb = mg_router.recv_multipart(0)?;
+            let mgid = to_router_id_array(msgb[0].clone())?;
+            let cmd = msgb[1].as_slice();
+            match cmd {
+                b"hb" => {
+                    managers
+                        .entry(mgid)
+                        .and_modify(|mg| mg.last_pulse = Instant::now());
+                }
+                b"register" => {
+                    let num_workers = de_usize(&msgb[2])?;
+                    managers.insert(
+                        mgid,
+                        Manager {
+                            last_pulse: Instant::now(),
+                            status: ManagerStatus::Idle,
+                            workers: num_workers,
+                        },
+                    );
+                    mg_router.send_multipart([mgid.as_slice(), b"registered"], 0)?;
+                    println!(
+                        "🐋 Registered manager {:x} with {} workers",
+                        de_router_id(&mgid)?,
+                        num_workers
+                    );
+                }
+                b"status" => {
+                    let status = &msgb[2];
+                    if let Some(id) = cur_id {
+                        fe_router.send_multipart(
+                            [
+                                id.as_slice(),
+                                b"prog",
+                                id.as_slice(),
+                                b"manager",
+                                &mgid[1..],
+                                status,
+                            ],
+                            0,
+                        )?;
+                    }
+                }
+                _ => (),
+            }
+        }
+
+        if sockets[2].is_readable() {
+            let msgb = exp_sock.recv_multipart(0)?;
+            let dst = msgb[0].as_slice();
+            match dst {
+                b"fe" => {
+                    let cmd = msgb[1].as_slice();
+                    let is_error = cmd == b"error";
+                    let is_done = cmd == b"done";
+
+                    if is_error {
+                        let id = msgb[2].as_slice();
+                        mg_router.send_multipart([b"abort", id], 0)?;
+                        exp_sock.send("abort", 0)?;
+                    }
+
+                    if let Some(id) = cur_id {
+                        fe_router.send(id.as_slice(), zmq::SNDMORE)?;
+                        fe_router.send_multipart(msgb.into_iter().skip(1), 0)?;
+                    }
+
+                    if is_done || is_error {
+                        *cur_id = None;
+                    }
+                }
+                b"mg" => {
+                    if managers.len() > 0 {
+                        broadcast_managers(&managers, &mg_router, &msgb[1..])?;
+                    } else {
+                        exp_sock.send("abort", 0)?;
+                        *cur_id = None;
+                        bail!("No managers connected, aborting experiment");
+                    }
+                }
+                _ => (),
+            }
+        }
+
+        Ok(())
+    };
+
     loop {
-        let res = main_loop(
-            &mut managers,
-            &mut cur_id,
-            &mut sockets,
-            &fe_router,
-            &mg_router,
-            &exp_sock,
-        );
-        if let Err(e) = res {
+        if let Err(e) = main_loop() {
             eprintln!("Error: {:?}", &e);
             if let Some(id) = &cur_id {
                 fe_router.send_multipart([id.as_slice(), b"error", e.to_string().as_bytes()], 0)?;
             }
         }
     }
-}
-
-fn main_loop(
-    managers: &mut Managers,
-    cur_id: &mut Option<Vec<u8>>,
-    sockets: &mut [zmq::PollItem],
-    fe_router: &zmq::Socket,
-    mg_router: &zmq::Socket,
-    exp_sock: &zmq::Socket,
-) -> Result<()> {
-    zmq::poll(sockets, -1)?;
-
-    if sockets[0].is_readable() {
-        let msgb = fe_router.recv_multipart(0)?;
-        let client = &msgb[0];
-        let cmd = msgb[1].as_slice();
-        match cmd {
-            b"ping" => fe_router.send_multipart([client.as_slice(), b"pong"], 0)?,
-            b"status" => {
-                let status: &[u8] = if cur_id.is_some() { b"busy" } else { b"idle" };
-                fe_router.send_multipart([client.as_slice(), b"status", status], 0)?;
-            }
-            b"run" => {
-                println!("🧪 Starting experiment {}", str::from_utf8(client)?);
-                *cur_id = Some(client.clone());
-                exp_sock.send_multipart(&msgb[1..], 0)?;
-            }
-            b"abort" => {
-                if let Some(id) = cur_id {
-                    println!("🧪 Aborting experiment {}", str::from_utf8(id)?);
-                    // let abort_id = &msgb[1];
-                    let abort_id = id.as_slice();
-                    // if abort_id == id {
-                    broadcast_managers(managers, mg_router, &["abort".as_bytes(), abort_id])?;
-                    exp_sock.send("abort", 0)?;
-                    fe_router.send_multipart([id.as_slice(), b"done", abort_id], 0)?;
-                    *cur_id = None;
-                    // } else {
-                    //     println!("Ignoring abort signal due to ID mismatch");
-                    // }
-                } else {
-                    println!("Ignoring abort signal, no experiments running");
-                }
-            }
-            _ => (),
-        }
-    }
-
-    if sockets[1].is_readable() {
-        let msgb = mg_router.recv_multipart(0)?;
-        let mgid = &msgb[0];
-        let cmd = msgb[1].as_slice();
-        match cmd {
-            b"register" => {
-                let num_workers = de_usize(&msgb[2])?;
-                managers.insert(
-                    mgid.clone(),
-                    Manager {
-                        last_pulse: Instant::now(),
-                        status: ManagerStatus::Idle,
-                        workers: num_workers,
-                    },
-                );
-                mg_router.send_multipart([mgid.as_slice(), b"registered"], 0)?;
-                println!(
-                    "🐋 Registered manager {:x} with {} workers",
-                    de_router_id(mgid)?,
-                    num_workers
-                );
-            }
-            b"status" => {
-                let status = &msgb[2];
-                if let Some(id) = cur_id {
-                    fe_router.send_multipart(
-                        [
-                            id.as_slice(),
-                            b"prog",
-                            id.as_slice(),
-                            b"manager",
-                            &mgid[1..],
-                            status,
-                        ],
-                        0,
-                    )?;
-                }
-            }
-            _ => (),
-        }
-    }
-
-    if sockets[2].is_readable() {
-        let msgb = exp_sock.recv_multipart(0)?;
-        let dst = msgb[0].as_slice();
-        match dst {
-            b"fe" => {
-                let cmd = msgb[1].as_slice();
-                let is_error = cmd == b"error";
-                let is_done = cmd == b"done";
-
-                if is_error {
-                    let id = msgb[2].as_slice();
-                    mg_router.send_multipart([b"abort", id], 0)?;
-                    exp_sock.send("abort", 0)?;
-                }
-
-                if let Some(id) = cur_id {
-                    fe_router.send(id.as_slice(), zmq::SNDMORE)?;
-                    fe_router.send_multipart(msgb.into_iter().skip(1), 0)?;
-                }
-
-                if is_done || is_error {
-                    *cur_id = None;
-                }
-            }
-            b"mg" => {
-                if managers.len() > 0 {
-                    broadcast_managers(managers, mg_router, &msgb[1..])?;
-                } else {
-                    exp_sock.send("abort", 0)?;
-                    *cur_id = None;
-                    bail!("No managers connected, aborting experiment");
-                }
-            }
-            _ => (),
-        }
-    }
-
-    Ok(())
 }
 
 fn experiment_loop(main_sock: &zmq::Socket, wk_router: &zmq::Socket) -> Result<()> {
@@ -508,7 +525,7 @@ fn broadcast_managers(
     msgb: &[impl Into<zmq::Message> + Clone],
 ) -> Result<()> {
     for id in managers.keys() {
-        mg_router.send(id, zmq::SNDMORE)?;
+        mg_router.send(id.as_slice(), zmq::SNDMORE)?;
         mg_router.send_multipart(msgb.iter(), 0)?;
     }
 

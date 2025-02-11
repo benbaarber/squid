@@ -30,6 +30,7 @@
 
 ### Broker -> Manager
 
+- hb
 - registered
 - spawn (id: `str`) (task_image: `str`)
 - abort (id: `str`)
@@ -37,6 +38,7 @@
 
 ### Manager -> Broker
 
+- hb
 - register (num_workers: `u32`)
 - status (status: `ManagerStatus`) 
 - [TODO] meta (info res)
