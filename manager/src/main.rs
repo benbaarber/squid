@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::Result;
 use clap::Parser;
-use shared::{docker, env, ManagerStatus};
+use shared::{de_u64, docker, env, ManagerStatus};
 
 #[derive(Parser)]
 #[command(about = "Squid Manager")]
@@ -17,6 +17,11 @@ struct Args {
     /// For testing only. Run in local mode, assume any task image passed is already in the local docker library.
     #[arg(short, long)]
     local: bool,
+}
+
+struct Worker {
+    last_pulse: Instant,
+    exp_id: u64,
 }
 
 fn main() -> Result<()> {
@@ -110,8 +115,9 @@ fn main() -> Result<()> {
                     last_broker_pulse = Instant::now();
                 }
                 b"spawn" => {
-                    let id = str::from_utf8(&msgb[1])?;
-                    println!("SPAWN ID: {}", id);
+                    let id = de_u64(&msgb[1])?;
+                    let id_hex = format!("{:x}", id);
+                    println!("SPAWN ID: {}", &id_hex);
                     let task_image = str::from_utf8(&msgb[2])?;
                     if !args.local {
                         send_status(&broker_sock, ManagerStatus::Pulling)?;
@@ -122,15 +128,16 @@ fn main() -> Result<()> {
                     }
                     send_status(&broker_sock, ManagerStatus::Active)?;
 
-                    let label = format!("squid_id={}", id);
+                    let label = format!("squid_id={}", &id_hex);
                     for _ in 0..num_containers {
-                        docker::run(task_image, &broker_wk_env, &label, id)?;
+                        docker::run(task_image, &broker_wk_env, &label, &id_hex)?;
                     }
                 }
                 b"abort" => {
-                    let id = str::from_utf8(&msgb[1])?;
-                    println!("ABORT ID: {}", id);
-                    docker::kill_all(id)?;
+                    let id = de_u64(&msgb[1])?;
+                    let id_hex = format!("{:x}", id);
+                    println!("ABORT ID: {}", &id_hex);
+                    docker::kill_all(&id_hex)?;
                 }
                 _ => (),
             }

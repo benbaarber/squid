@@ -24,7 +24,7 @@ impl Genome for CTRNNGenome {
     type Species = CTRNNSpecies;
 
     fn mutate(&mut self, species: &CTRNNSpecies, chance: f64, magnitude: f64) {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let bern = Bernoulli::new(chance).unwrap();
 
         if bern.sample(&mut rng) {
@@ -70,7 +70,7 @@ impl Species for CTRNNSpecies {
 
     fn random_genome(&self) -> CTRNNGenome {
         let size = self.input_size + self.hidden_size + self.output_size;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = Normal::new(1.0, 0.333).unwrap();
 
         let (min_tau, max_tau) = self.tau_bounds;

@@ -72,6 +72,14 @@ pub fn de_u32(frame: &[u8]) -> Result<u32> {
     Ok(u32::from_le_bytes(bytes))
 }
 
+pub fn de_u64(frame: &[u8]) -> Result<u64> {
+    let len = frame.len();
+    let bytes: [u8; 8] = frame
+        .try_into()
+        .map_err(|_| anyhow!("Invalid slice length for u64 conversion: {}", len))?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
 pub fn de_f64(frame: &[u8]) -> Result<f64> {
     let len = frame.len();
     let bytes: [u8; 8] = frame

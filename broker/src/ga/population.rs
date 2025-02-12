@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rand::seq::SliceRandom;
+use rand::seq::IndexedRandom;
 use shared::{GAConfig, PopEvaluation};
 
 use super::{agent::Agent, genome::Species};
@@ -26,7 +26,7 @@ impl<S: Species> Population<S> {
                 if agents.len() < config.population_size {
                     // Spawn remaining agents to reach intended population size
                     let num_seeds = agents.len();
-                    let mut rng = rand::thread_rng();
+                    let mut rng = rand::rng();
                     while agents.len() < config.population_size {
                         let parent = agents[..num_seeds]
                             .choose(&mut rng)
@@ -93,7 +93,7 @@ impl<S: Species> GenericPopulation for Population<S> {
             .max(1.0) as usize;
         let num_randoms = (self.agents.len() as f64 * self.config.random_percent).round() as usize;
         let random_start_ix = self.agents.len() - num_randoms;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         for i in num_elites..random_start_ix {
             let parent = self.agents[..num_elites]

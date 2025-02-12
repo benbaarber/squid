@@ -4,8 +4,8 @@
 
 - ping
 - status
-- run (id: `str`) (blueprint: `Blueprint`) (seeds: `Vec<Species>`)
-- abort (id: `str`)
+- run (id: `u64`) (blueprint: `Blueprint`) (seeds: `Vec<Species>`) [NOTE: must use custom u64 identity]
+- abort (id: `u64`)
 
 ### Broker -> Client
 
@@ -13,7 +13,7 @@
 - status
   - idle
   - busy
-- prog (id: `str`)
+- prog (id: `u64`)
   - gen (num: `u32`)
     - running
     - done (evaluation: `PopEvaluation`)
@@ -22,18 +22,18 @@
     - done
     - failed (message: `str`)
   - manager (mgid: `u32`) (status: `ManagerStatus`)
-- save (id: `str`)
+- save (id: `u64`)
   - population (agents: `Vec<json>`)
   - data (gen: `u32`) (data: `json`)
-- done (id: `str`)
+- done (id: `u64`)
 - error (message: `str`)
 
 ### Broker -> Manager
 
 - hb
 - registered
-- spawn (id: `str`) (task_image: `str`)
-- abort (id: `str`)
+- spawn (id: `u64`) (task_image: `str`)
+- abort (id: `u64`)
 - [TODO] meta (info req)
 
 ### Manager -> Broker
@@ -43,18 +43,27 @@
 - status (status: `ManagerStatus`) 
 - [TODO] meta (info res)
 
+### Manager -> Worker
+
+- hb
+
+### Worker -> Manager
+
+- hb
+- register (id: `u64`)
+
 ### Worker -> Broker
 
-- (id: `str`) ready
-- (id: `str`) done (gen: `u32`) (ix: `u32`) (fitness: `f64`)
-- (id: `str`) moredata (gen: `u32`) (ix: `u32`) (data: `json`)
-- (id: `str`) error (gen: `u32`) (ix: `u32`) (message: `str`)
+- (id: `u64`) ready
+- (id: `u64`) done (gen: `u32`) (ix: `u32`) (fitness: `f64`)
+- (id: `u64`) moredata (gen: `u32`) (ix: `u32`) (data: `json`)
+- (id: `u64`) error (gen: `u32`) (ix: `u32`) (message: `str`)
 
 ### Broker -> Worker
 
-- (id: `str`) sim (gen: `u32`) (ix: `u32`) (agent: `json`)
-- (id: `str`) moredata (gen: `u32`) (ix: `u32`)
-- (id: `str`) kill
+- (id: `u64`) sim (gen: `u32`) (ix: `u32`) (agent: `json`)
+- (id: `u64`) moredata (gen: `u32`) (ix: `u32`)
+- (id: `u64`) kill
 
 ### Client Broker thread -> TUI Thread
 
@@ -67,3 +76,10 @@
   - failed (message: `str`)
 - done
 - crashed
+
+## Ports
+
+5554 - manager (router) <- worker (dealer)
+5555 - broker (router) <- client (dealer)
+5556 - broker (router) <- manager (dealer)
+5557+ - broker (router) <- worker (dealer)

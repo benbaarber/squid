@@ -6,8 +6,8 @@ edition = "2021"
 [dependencies]
 anyhow.workspace = true
 bincode.workspace = true
-rand = "0.8.5"
-rand_distr = "0.4.3"
+rand.workspace = true
+rand_distr = "0.5.0"
 serde.workspace = true
 serde_json.workspace = true
 shared.workspace = true

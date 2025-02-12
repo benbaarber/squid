@@ -9,7 +9,7 @@ use ga::{
     population::{GenericPopulation, Population},
 };
 use serde::Deserialize;
-use shared::{de_f64, de_usize, Blueprint, ManagerStatus};
+use shared::{de_f64, de_u64, de_usize, Blueprint, ManagerStatus};
 use std::{
     collections::HashMap,
     thread,
@@ -32,7 +32,7 @@ fn main() -> Result<()> {
     println!("🦑 Broker starting up...");
 
     let mut managers = Managers::new();
-    let mut cur_id: Option<Vec<u8>> = None;
+    let mut cur_id: Option<u64> = None;
 
     let ctx = zmq::Context::new();
 
@@ -79,17 +79,17 @@ fn main() -> Result<()> {
     const MG_TTL: Duration = Duration::from_secs(15);
     let mut last_heartbeat = Instant::now();
 
-    let mut main_loop = || -> Result<()> {
+    let mut main_loop = |cur_id: &mut Option<u64>| -> Result<()> {
         if last_heartbeat.elapsed() > HB_INTERVAL {
             managers.retain(|id, mg| {
                 if mg.last_pulse.elapsed() > MG_TTL {
-                    println!("⛓️‍💥 Lost manager {:x}", de_router_id(id).unwrap(),);
+                    println!("⛓️‍💥 Lost manager {:x}", de_router_id(id).unwrap());
                     return false;
                 };
-                mg_router.send_multipart([id, "hb".as_bytes()], 0).unwrap();
+                mg_router.send_multipart([&id[..], b"hb"], 0).unwrap();
                 true
             });
-            *last_heartbeat = Instant::now();
+            last_heartbeat = Instant::now();
         }
 
         let timeout = HB_INTERVAL
@@ -102,28 +102,41 @@ fn main() -> Result<()> {
 
         if sockets[0].is_readable() {
             let msgb = fe_router.recv_multipart(0)?;
-            let client = &msgb[0];
-            let cmd = msgb[1].as_slice();
+            let client = &msgb[0][..];
+            let cmd = &msgb[1][..];
             match cmd {
-                b"ping" => fe_router.send_multipart([client.as_slice(), b"pong"], 0)?,
+                b"ping" => fe_router.send_multipart([client, b"pong"], 0)?,
                 b"status" => {
                     let status: &[u8] = if cur_id.is_some() { b"busy" } else { b"idle" };
-                    fe_router.send_multipart([client.as_slice(), b"status", status], 0)?;
+                    fe_router.send_multipart([client, b"status", status], 0)?;
                 }
                 b"run" => {
-                    println!("🧪 Starting experiment {}", str::from_utf8(client)?);
-                    *cur_id = Some(client.clone());
+                    if client.len() != 8 {
+                        fe_router.send_multipart([
+                            client,
+                            b"error",
+                            b"Invalid router identity. Set socket identity to the u64 experiment ID."
+                        ], 0)?;
+                    }
+                    let id = de_u64(client)?;
+                    *cur_id = Some(id);
+                    println!("🧪 Starting experiment {:x}", id);
                     exp_sock.send_multipart(&msgb[1..], 0)?;
                 }
                 b"abort" => {
                     if let Some(id) = cur_id {
-                        println!("🧪 Aborting experiment {}", str::from_utf8(&id)?);
+                        println!("🧪 Aborting experiment {:x}", id);
+                        let id_b = id.to_le_bytes();
                         // let abort_id = &msgb[1];
-                        let abort_id = id.as_slice();
+                        let abort_id = id.to_le_bytes();
                         // if abort_id == id {
-                        broadcast_managers(&managers, &mg_router, &["abort".as_bytes(), abort_id])?;
+                        broadcast_managers(
+                            &managers,
+                            &mg_router,
+                            &["abort".as_bytes(), &abort_id],
+                        )?;
                         exp_sock.send("abort", 0)?;
-                        fe_router.send_multipart([id.as_slice(), b"done", abort_id], 0)?;
+                        fe_router.send_multipart([&id_b[..], b"done", &abort_id], 0)?;
                         *cur_id = None;
                         // } else {
                         //     println!("Ignoring abort signal due to ID mismatch");
@@ -156,7 +169,7 @@ fn main() -> Result<()> {
                             workers: num_workers,
                         },
                     );
-                    mg_router.send_multipart([mgid.as_slice(), b"registered"], 0)?;
+                    mg_router.send_multipart([&mgid[..], b"registered"], 0)?;
                     println!(
                         "🐋 Registered manager {:x} with {} workers",
                         de_router_id(&mgid)?,
@@ -166,15 +179,9 @@ fn main() -> Result<()> {
                 b"status" => {
                     let status = &msgb[2];
                     if let Some(id) = cur_id {
+                        let id_b = id.to_le_bytes();
                         fe_router.send_multipart(
-                            [
-                                id.as_slice(),
-                                b"prog",
-                                id.as_slice(),
-                                b"manager",
-                                &mgid[1..],
-                                status,
-                            ],
+                            [&id_b[..], b"prog", &id_b, b"manager", &mgid[1..], status],
                             0,
                         )?;
                     }
@@ -199,7 +206,7 @@ fn main() -> Result<()> {
                     }
 
                     if let Some(id) = cur_id {
-                        fe_router.send(id.as_slice(), zmq::SNDMORE)?;
+                        fe_router.send(&id.to_le_bytes()[..], zmq::SNDMORE)?;
                         fe_router.send_multipart(msgb.into_iter().skip(1), 0)?;
                     }
 
@@ -211,9 +218,10 @@ fn main() -> Result<()> {
                     if managers.len() > 0 {
                         broadcast_managers(&managers, &mg_router, &msgb[1..])?;
                     } else {
-                        exp_sock.send("abort", 0)?;
-                        *cur_id = None;
-                        bail!("No managers connected, aborting experiment");
+                        // TODO UNDO THIS
+                        // exp_sock.send("abort", 0)?;
+                        // *cur_id = None;
+                        // bail!("No managers connected, aborting experiment");
                     }
                 }
                 _ => (),
@@ -224,10 +232,13 @@ fn main() -> Result<()> {
     };
 
     loop {
-        if let Err(e) = main_loop() {
+        if let Err(e) = main_loop(&mut cur_id) {
             eprintln!("Error: {:?}", &e);
-            if let Some(id) = &cur_id {
-                fe_router.send_multipart([id.as_slice(), b"error", e.to_string().as_bytes()], 0)?;
+            if let Some(id) = cur_id {
+                fe_router.send_multipart(
+                    [&id.to_le_bytes()[..], b"error", e.to_string().as_bytes()],
+                    0,
+                )?;
             }
         }
     }
@@ -246,8 +257,8 @@ fn experiment_loop(main_sock: &zmq::Socket, wk_router: &zmq::Socket) -> Result<(
         bail!("Received invalid command: `{}`", str::from_utf8(cmd)?);
     }
 
-    let id = &msgb[1];
-    let id_str = str::from_utf8(id)?;
+    let id = de_u64(&msgb[1])?;
+    let id_b = id.to_le_bytes();
 
     // clear worker router in case of leftover messages (bandaid)
     while let Ok(_) = wk_router.recv_into(&mut [], zmq::DONTWAIT) {}
@@ -264,7 +275,7 @@ fn experiment_loop(main_sock: &zmq::Socket, wk_router: &zmq::Socket) -> Result<(
         [
             "mg".as_bytes(),
             b"spawn",
-            id.as_slice(),
+            &id_b,
             blueprint.experiment.task_image.as_bytes(),
         ],
         0,
@@ -282,7 +293,7 @@ fn experiment_loop(main_sock: &zmq::Socket, wk_router: &zmq::Socket) -> Result<(
             [
                 "fe".as_bytes(),
                 b"prog",
-                id.as_slice(),
+                &id_b,
                 b"gen",
                 &gen_num_b,
                 b"running",
@@ -301,27 +312,13 @@ fn experiment_loop(main_sock: &zmq::Socket, wk_router: &zmq::Socket) -> Result<(
             let ix = (queued_agent as u32).to_le_bytes();
             let agent = population.pack_agent(queued_agent)?;
             wk_router.send_multipart(
-                [
-                    worker.as_slice(),
-                    id.as_slice(),
-                    b"sim",
-                    &gen_num_b,
-                    &ix,
-                    &agent,
-                ],
+                [worker.as_slice(), &id_b, b"sim", &gen_num_b, &ix, &agent],
                 0,
             )?;
             queued_agent += 1;
 
             main_sock.send_multipart(
-                [
-                    "fe".as_bytes(),
-                    b"prog",
-                    id.as_slice(),
-                    b"agent",
-                    &ix,
-                    b"running",
-                ],
+                ["fe".as_bytes(), b"prog", &id_b, b"agent", &ix, b"running"],
                 0,
             )?;
         }
@@ -339,7 +336,7 @@ fn experiment_loop(main_sock: &zmq::Socket, wk_router: &zmq::Socket) -> Result<(
             if sockets[1].is_readable() {
                 let msgb = wk_router.recv_multipart(0)?;
 
-                if &msgb[1] != id {
+                if msgb[1] != id_b {
                     continue;
                 }
 
@@ -350,27 +347,13 @@ fn experiment_loop(main_sock: &zmq::Socket, wk_router: &zmq::Socket) -> Result<(
                             let ix = (queued_agent as u32).to_le_bytes();
                             let agent = population.pack_agent(queued_agent)?;
                             wk_router.send_multipart(
-                                [
-                                    msgb[0].as_slice(),
-                                    &msgb[1],
-                                    b"sim",
-                                    &gen_num_b,
-                                    &ix,
-                                    &agent,
-                                ],
+                                [msgb[0].as_slice(), &id_b, b"sim", &gen_num_b, &ix, &agent],
                                 0,
                             )?;
                             queued_agent += 1;
 
                             main_sock.send_multipart(
-                                [
-                                    "fe".as_bytes(),
-                                    b"prog",
-                                    id.as_slice(),
-                                    b"agent",
-                                    &ix,
-                                    b"running",
-                                ],
+                                ["fe".as_bytes(), b"prog", &id_b, b"agent", &ix, b"running"],
                                 0,
                             )?;
                         } else {
@@ -385,14 +368,7 @@ fn experiment_loop(main_sock: &zmq::Socket, wk_router: &zmq::Socket) -> Result<(
                         completed_sims += 1;
 
                         main_sock.send_multipart(
-                            [
-                                "fe".as_bytes(),
-                                b"prog",
-                                id.as_slice(),
-                                b"agent",
-                                &msgb[2],
-                                b"done",
-                            ],
+                            ["fe".as_bytes(), b"prog", &id_b, b"agent", &msgb[2], b"done"],
                             0,
                         )?;
 
@@ -417,7 +393,7 @@ fn experiment_loop(main_sock: &zmq::Socket, wk_router: &zmq::Socket) -> Result<(
             wk_router.send_multipart(
                 [
                     best_agent_worker_id_b.as_slice(),
-                    id.as_slice(),
+                    &id_b,
                     b"moredata",
                     &gen_num_b,
                     &best_agent_ix.to_le_bytes(),
@@ -428,7 +404,7 @@ fn experiment_loop(main_sock: &zmq::Socket, wk_router: &zmq::Socket) -> Result<(
             while wk_router.poll(zmq::POLLIN, 10000)? > 0 {
                 let msgb = wk_router.recv_multipart(0)?;
 
-                if &msgb[1] != id {
+                if msgb[1] != id_b {
                     continue;
                 }
 
@@ -437,14 +413,7 @@ fn experiment_loop(main_sock: &zmq::Socket, wk_router: &zmq::Socket) -> Result<(
                     b"moredata" => match msgb.into_iter().nth(5) {
                         Some(data) => {
                             main_sock.send_multipart(
-                                [
-                                    "fe".as_bytes(),
-                                    b"save",
-                                    id.as_slice(),
-                                    b"data",
-                                    &gen_num_b,
-                                    &data,
-                                ],
+                                ["fe".as_bytes(), b"save", &id_b, b"data", &gen_num_b, &data],
                                 0,
                             )?;
                             break;
@@ -468,7 +437,7 @@ fn experiment_loop(main_sock: &zmq::Socket, wk_router: &zmq::Socket) -> Result<(
             [
                 "fe".as_bytes(),
                 b"prog",
-                id.as_slice(),
+                &id_b,
                 b"gen",
                 &gen_num_b,
                 b"done",
@@ -479,42 +448,25 @@ fn experiment_loop(main_sock: &zmq::Socket, wk_router: &zmq::Socket) -> Result<(
 
         if gen_num % config.save_every == 0 {
             let agents = population.pack_save()?;
-            main_sock.send_multipart(
-                [
-                    "fe".as_bytes(),
-                    b"save",
-                    id.as_slice(),
-                    b"population",
-                    &agents,
-                ],
-                0,
-            )?;
+            main_sock
+                .send_multipart(["fe".as_bytes(), b"save", &id_b, b"population", &agents], 0)?;
         }
 
         population.evolve();
     }
 
     let agents = population.pack_save()?;
-    main_sock.send_multipart(
-        [
-            "fe".as_bytes(),
-            b"save",
-            id.as_slice(),
-            b"population",
-            &agents,
-        ],
-        0,
-    )?;
-    main_sock.send_multipart(["fe".as_bytes(), b"done", id.as_slice()], 0)?;
+    main_sock.send_multipart(["fe".as_bytes(), b"save", &id_b, b"population", &agents], 0)?;
+    main_sock.send_multipart(["fe".as_bytes(), b"done", &id_b], 0)?;
 
     for worker in ready_workers {
-        wk_router.send_multipart([worker.as_slice(), id.as_slice(), b"kill"], 0)?;
+        wk_router.send_multipart([&worker[..], &id_b, b"kill"], 0)?;
     }
     while let Ok(msgb) = wk_router.recv_multipart(zmq::DONTWAIT) {
-        wk_router.send_multipart([msgb[0].as_slice(), id.as_slice(), b"kill"], 0)?;
+        wk_router.send_multipart([&msgb[0][..], &id_b, b"kill"], 0)?;
     }
 
-    println!("🧪 Finished experiment {}", id_str);
+    println!("🧪 Finished experiment {:x}", id);
 
     Ok(())
 }
@@ -525,7 +477,7 @@ fn broadcast_managers(
     msgb: &[impl Into<zmq::Message> + Clone],
 ) -> Result<()> {
     for id in managers.keys() {
-        mg_router.send(id.as_slice(), zmq::SNDMORE)?;
+        mg_router.send(&id[..], zmq::SNDMORE)?;
         mg_router.send_multipart(msgb.iter(), 0)?;
     }
 

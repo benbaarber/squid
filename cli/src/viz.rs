@@ -29,7 +29,7 @@ pub enum AppState {
 
 pub struct App {
     // exp data
-    experiment_id: String,
+    experiment_id: u64,
     start_time: Instant,
     end_duration: Option<Duration>,
     // exp state
@@ -51,7 +51,7 @@ pub struct App {
 impl App {
     pub fn new(
         blueprint: &Blueprint,
-        experiment_id: String,
+        experiment_id: u64,
         logs: Arc<Mutex<Vec<TUILog>>>,
     ) -> io::Result<Self> {
         let population_size = blueprint.ga.population_size;
@@ -254,7 +254,7 @@ impl WidgetRef for App {
 
         // Info
         let lines = vec![
-            info_line_str("Experiment ID : ", &self.experiment_id),
+            info_line("Experiment ID : ", format!("{:x}", self.experiment_id)),
             info_line(
                 "Generation    : ",
                 format!("{} / {}", self.cur_gen, self.num_gens),

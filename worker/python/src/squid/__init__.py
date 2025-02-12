@@ -24,7 +24,7 @@ def run(sim_fn: Callable[[dict], tuple[float, dict | None]]):
         where the rows are lists of floats that line up with the headers specified in the blueprint.
         These rows will be appended to the csv files for the best agent after each generation.
     """
-    exp_id_b = sys.argv[1].encode()
+    exp_id_b = struct.pack("<Q", int(sys.argv[1], base=16))
 
     broker_url = os.environ.get("SQUID_BROKER_WK_SOCK_URL")
     if broker_url is None:
@@ -38,86 +38,106 @@ def run(sim_fn: Callable[[dict], tuple[float, dict | None]]):
         )
 
     ctx = zmq.Context()
-    socket = ctx.socket(zmq.DEALER)
-
+    mg_sock = ctx.socket(zmq.DEALER)
+    ga_sock = ctx.socket(zmq.DEALER)
+    
     try:
-        socket.connect(broker_url)
-        socket.send_multipart([exp_id_b, b"ready"])
+        mg_sock.setsockopt(zmq.LINGER, 0)
+        mg_sock.connect("tcp://172.17.0.1:5554")
+        mg_sock.send_multipart([b"register", exp_id_b])
+        
+        ga_sock.connect(broker_url)
+        ga_sock.send_multipart([exp_id_b, b"ready"])
 
         current_gen = 0
         best_agent_fitness = 0.0
         best_agent_data = None
 
-        # TODO: for now shutting down after 5 minutes of no activity
-        # Will want to update this when I implement heartbeating between the
-        # manager and the workers
-        while socket.poll(3e5) > 0:
-            msgb = socket.recv_multipart()
+        poller = zmq.Poller()
+        poller.register(mg_sock, zmq.POLLIN)
+        poller.register(ga_sock, zmq.POLLIN)
+        
+        active = True
+        while active:
+            active = False
+            socks: dict[zmq.SyncSocket, int] = dict(poller.poll(3e5))
 
-            cmd = msgb[1]
-            match cmd:
-                case b"sim":
-                    try:
-                        gen: int = struct.unpack("<I", msgb[2])
-                        if gen != current_gen:
-                            best_agent_fitness = 0.0
-                            best_agent_data = None
-                            current_gen = gen
+            if mg_sock in socks:
+                active = True
+                msgb = mg_sock.recv()
+                if msgb == b"hb":
+                    mg_sock.send(b"hb")
+            
+            if ga_sock in socks:
+                active = True
+                msgb = ga_sock.recv_multipart()
+                cmd = msgb[1]
+                match cmd:
+                    case b"sim":
+                        try:
+                            gen: int = struct.unpack("<I", msgb[2])
+                            if gen != current_gen:
+                                best_agent_fitness = 0.0
+                                best_agent_data = None
+                                current_gen = gen
 
-                        agent = orjson.loads(msgb[4])
-                        fitness, data = sim_fn(agent)
-                        if fitness > best_agent_fitness:
-                            best_agent_fitness = fitness
-                            best_agent_data = data
-                        fitness_b = struct.pack("<d", fitness)
-                        socket.send_multipart(
-                            [
-                                exp_id_b,
-                                b"done",
-                                msgb[2],
-                                msgb[3],
-                                fitness_b,
-                            ]
-                        )
-                        socket.send_multipart([exp_id_b, b"ready"])
-                    except Exception as e:
-                        socket.send_multipart(
-                            [
-                                exp_id_b,
-                                b"error",
-                                msgb[2],
-                                msgb[3],
-                                f"Worker error (sim): {e}".encode(),
-                            ]
-                        )
-                        print("Simulation error:", str(e))
-                case b"moredata":
-                    try:
-                        gen: int = struct.unpack("<I", msgb[2])
-                        if gen != current_gen:
-                            raise ValueError(
-                                f"moredata generation mismatch from broker, expected gen {current_gen}, got gen {gen}"
+                            agent = orjson.loads(msgb[4])
+                            fitness, data = sim_fn(agent)
+                            if fitness > best_agent_fitness:
+                                best_agent_fitness = fitness
+                                best_agent_data = data
+                            fitness_b = struct.pack("<d", fitness)
+                            ga_sock.send_multipart(
+                                [
+                                    exp_id_b,
+                                    b"done",
+                                    msgb[2],
+                                    msgb[3],
+                                    fitness_b,
+                                ]
                             )
+                            ga_sock.send_multipart([exp_id_b, b"ready"])
+                        except Exception as e:
+                            ga_sock.send_multipart(
+                                [
+                                    exp_id_b,
+                                    b"error",
+                                    msgb[2],
+                                    msgb[3],
+                                    f"Worker error (sim): {e}".encode(),
+                                ]
+                            )
+                            print("Simulation error:", str(e))
+                    case b"moredata":
+                        try:
+                            gen: int = struct.unpack("<I", msgb[2])
+                            if gen != current_gen:
+                                raise ValueError(
+                                    f"moredata generation mismatch from broker, expected gen {current_gen}, got gen {gen}"
+                                )
 
-                        data_b = orjson.dumps(best_agent_data)
-                        socket.send_multipart(
-                            [exp_id_b, b"moredata", msgb[2], msgb[3], data_b]
-                        )
-                    except Exception as e:
-                        socket.send_multipart(
-                            [
-                                exp_id_b,
-                                b"error",
-                                msgb[2],
-                                msgb[3],
-                                f"Worker error (moredata): {e}".encode(),
-                            ]
-                        )
-                        print("Error:", e)
-                case b"kill":
-                    break
-                case _:
-                    print("Received invalid command:", cmd)
+                            data_b = orjson.dumps(best_agent_data)
+                            ga_sock.send_multipart(
+                                [exp_id_b, b"moredata", msgb[2], msgb[3], data_b]
+                            )
+                        except Exception as e:
+                            ga_sock.send_multipart(
+                                [
+                                    exp_id_b,
+                                    b"error",
+                                    msgb[2],
+                                    msgb[3],
+                                    f"Worker error (moredata): {e}".encode(),
+                                ]
+                            )
+                            print("Error:", e)
+                    case b"kill":
+                        break
+                    case _:
+                        print("Received invalid command:", cmd)
+        
+        mg_sock.send(b"drop")
     finally:
-        socket.close()
+        mg_sock.close()
+        ga_sock.close()
         ctx.term()

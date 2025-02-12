@@ -15,7 +15,6 @@ use anyhow::{bail, Context, Result};
 use chrono::Local;
 use clap::{Parser, Subcommand};
 use log::{error, info};
-use nanoid::nanoid;
 use serde_json::Value;
 use shared::{bail_assert, de_usize, docker, env, Blueprint, PopEvaluation};
 use viz::App;
@@ -177,30 +176,30 @@ fn main() -> Result<()> {
 
             // Start TUI
 
-            let id = nanoid!(8);
-            let mut app = App::new(&blueprint, id.clone(), logs).context("TUI failed to start")?;
+            let id: u64 = rand::random();
+            let mut app = App::new(&blueprint, id, logs).context("TUI failed to start")?;
 
             // Start experiment in thread
 
             let bthread_sock = ctx.socket(zmq::PAIR)?;
             bthread_sock.bind("inproc://broker_loop")?;
             let bthread = thread::spawn(move || -> Result<()> {
-                let id_b = id.as_bytes();
+                let id_b = id.to_le_bytes();
                 let tui_sock = ctx.socket(zmq::PAIR)?;
                 tui_sock.connect("inproc://broker_loop")?;
                 let broker_sock = ctx.socket(zmq::DEALER)?;
-                broker_sock.set_identity(id_b)?;
+                broker_sock.set_identity(&id_b)?;
                 broker_sock.connect(&broker_url)?;
 
-                info!("🧪 Starting experiment {}", &id);
-                broker_sock.send_multipart([b"run", id_b, &blueprint_b, &seeds_b], 0)?;
+                info!("🧪 Starting experiment {:x}", id);
+                broker_sock.send_multipart(["run".as_bytes(), &id_b, &blueprint_b, &seeds_b], 0)?;
 
                 let mut sockets = [
                     broker_sock.as_poll_item(zmq::POLLIN),
                     tui_sock.as_poll_item(zmq::POLLIN),
                 ];
                 loop {
-                    match broker_loop(&mut sockets, &broker_sock, &tui_sock, id_b, &out_dir) {
+                    match broker_loop(&mut sockets, &broker_sock, &tui_sock, &id_b, &out_dir) {
                         Ok(ControlFlow::Break(_)) => break,
                         Ok(ControlFlow::Continue(_)) => continue,
                         Err(e) => {
@@ -245,7 +244,7 @@ fn broker_loop(
     sockets: &mut [zmq::PollItem; 2],
     broker_sock: &zmq::Socket,
     tui_sock: &zmq::Socket,
-    id: &[u8],
+    id_b: &[u8],
     out_dir: &Path,
 ) -> Result<ControlFlow<()>> {
     zmq::poll(sockets, -1)?;
@@ -253,7 +252,6 @@ fn broker_loop(
     if sockets[0].is_readable() {
         let msgb = broker_sock.recv_multipart(0)?;
         let cmd = msgb[0].as_slice();
-        // let _id = str::from_utf8(&msgb[1])?;
         match cmd {
             b"prog" => {
                 tui_sock.send_multipart(&msgb[2..], 0)?;
@@ -323,7 +321,7 @@ fn broker_loop(
     if sockets[1].is_readable() {
         let msg = tui_sock.recv_bytes(0)?;
         if msg == b"abort" {
-            broker_sock.send_multipart([b"abort", id], 0)?;
+            broker_sock.send_multipart([b"abort", id_b], 0)?;
         }
     }
 
