@@ -1,4 +1,3 @@
-use anyhow::{anyhow, Result};
 
 /// Macro for deserializing a blueprint into a population with a given
 /// species and genome type, and returning a boxed trait object
@@ -24,17 +23,4 @@ macro_rules! synthesize {
         let population = Population::new($blueprint.ga, species, agents);
         Box::new(population)
     }};
-}
-
-pub fn de_router_id(frame: &[u8]) -> Result<u32> {
-    let bytes: [u8; 4] = frame[1..]
-        .try_into()
-        .map_err(|_| anyhow!("Byte array should be 5 bytes long"))?;
-    Ok(u32::from_le_bytes(bytes))
-}
-
-pub fn to_router_id_array(router_id: Vec<u8>) -> Result<[u8; 5]> {
-    router_id
-        .try_into()
-        .map_err(|_| anyhow!("Byte vec should be 5 bytes long for router id conversion"))
 }

@@ -9,13 +9,14 @@ use ga::{
     population::{GenericPopulation, Population},
 };
 use serde::Deserialize;
-use shared::{de_f64, de_u64, de_usize, Blueprint, ManagerStatus};
+use shared::{
+    de_f64, de_router_id, de_u64, de_usize, to_router_id_array, Blueprint, ManagerStatus,
+};
 use std::{
     collections::HashMap,
     thread,
     time::{Duration, Instant},
 };
-use util::{de_router_id, to_router_id_array};
 
 struct Manager {
     last_pulse: Instant,
@@ -95,8 +96,7 @@ fn main() -> Result<()> {
         let timeout = HB_INTERVAL
             .checked_sub(last_heartbeat.elapsed())
             .map(|x| x.as_millis() as i64)
-            .unwrap_or(0)
-            .max(1);
+            .unwrap_or(0);
 
         zmq::poll(&mut sockets, timeout)?;
 
@@ -218,10 +218,9 @@ fn main() -> Result<()> {
                     if managers.len() > 0 {
                         broadcast_managers(&managers, &mg_router, &msgb[1..])?;
                     } else {
-                        // TODO UNDO THIS
-                        // exp_sock.send("abort", 0)?;
-                        // *cur_id = None;
-                        // bail!("No managers connected, aborting experiment");
+                        exp_sock.send("abort", 0)?;
+                        *cur_id = None;
+                        bail!("No managers connected, aborting experiment");
                     }
                 }
                 _ => (),

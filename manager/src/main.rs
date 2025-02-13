@@ -1,12 +1,13 @@
 use core::str;
 use std::{
+    collections::HashMap,
     thread,
     time::{Duration, Instant},
 };
 
 use anyhow::Result;
 use clap::Parser;
-use shared::{de_u64, docker, env, ManagerStatus};
+use shared::{de_u64, docker, env, to_router_id_array, ManagerStatus};
 
 #[derive(Parser)]
 #[command(about = "Squid Manager")]
@@ -20,9 +21,11 @@ struct Args {
 }
 
 struct Worker {
-    last_pulse: Instant,
     exp_id: u64,
+    last_pulse: Instant,
 }
+
+type Workers = HashMap<[u8; 5], Worker>;
 
 fn main() -> Result<()> {
     let args = Args::parse();
@@ -40,6 +43,7 @@ fn main() -> Result<()> {
     let _status = ManagerStatus::Idle;
     let cpus = thread::available_parallelism()?.get();
     let num_containers = args.containers.unwrap_or(cpus).min(cpus);
+    let mut workers = Workers::with_capacity(num_containers);
 
     println!("🐋 Manager starting up...");
     println!("🐋 Detected {} CPUs", cpus);
@@ -48,6 +52,8 @@ fn main() -> Result<()> {
     let ctx = zmq::Context::new();
     let broker_sock = ctx.socket(zmq::DEALER)?;
     broker_sock.connect(&mg_sock_url)?;
+    let worker_sock = ctx.socket(zmq::ROUTER)?;
+    worker_sock.bind("tcp://172.17.0.1:5554")?;
 
     let register = || {
         broker_sock
@@ -86,33 +92,62 @@ fn main() -> Result<()> {
 
     register();
 
-    const HB_INTERVAL: Duration = Duration::from_secs(5);
+    const WK_HB_INTERVAL: Duration = Duration::from_secs(1);
+    const WK_TTL: Duration = Duration::from_secs(3);
+    const BK_HB_INTERVAL: Duration = Duration::from_secs(5);
     const BK_TTL: Duration = Duration::from_secs(15);
-    let mut last_heartbeat = Instant::now();
-    let mut last_broker_pulse = Instant::now();
+    let mut last_wk_hb_out = Instant::now();
+    let mut last_bk_hb_out = Instant::now();
+    let mut last_bk_hb_in = Instant::now();
+
+    let mut sockets = [
+        broker_sock.as_poll_item(zmq::POLLIN),
+        worker_sock.as_poll_item(zmq::POLLIN),
+    ];
 
     let mut manager_loop = || -> Result<()> {
-        if last_heartbeat.elapsed() > HB_INTERVAL {
-            if last_broker_pulse.elapsed() > BK_TTL {
+        if last_bk_hb_out.elapsed() > BK_HB_INTERVAL {
+            if last_bk_hb_in.elapsed() > BK_TTL {
                 println!("⛓️‍💥 Lost connection to Squid broker. Reconnecting...");
                 register();
             }
             broker_sock.send("hb".as_bytes(), 0)?;
-            last_heartbeat = Instant::now();
+            last_bk_hb_out = Instant::now();
         };
 
-        let timeout = HB_INTERVAL
-            .checked_sub(last_heartbeat.elapsed())
-            .map(|x| x.as_millis() as i64)
-            .unwrap_or(0)
-            .max(1);
+        if workers.len() > 0 && last_wk_hb_out.elapsed() > WK_HB_INTERVAL {
+            workers.retain(|id, wk| {
+                if wk.last_pulse.elapsed() > WK_TTL {
+                    return false;
+                }
+                worker_sock.send_multipart([&id[..], b"hb"], 0).unwrap();
+                true
+            });
+            last_wk_hb_out = Instant::now();
+        }
 
-        if broker_sock.poll(zmq::POLLIN, timeout)? > 0 {
+        let timeout = if workers.len() > 0 {
+            WK_HB_INTERVAL
+                .checked_sub(last_wk_hb_out.elapsed())
+                .map(|x| x.as_millis() as i64)
+                .unwrap_or(0)
+        } else {
+            BK_HB_INTERVAL
+                .checked_sub(last_bk_hb_out.elapsed())
+                .map(|x| x.as_millis() as i64)
+                .unwrap_or(0)
+        };
+
+        if zmq::poll(&mut sockets, timeout)? == 0 {
+            return Ok(());
+        }
+
+        if sockets[0].is_readable() {
             let msgb = broker_sock.recv_multipart(0)?;
             let cmd = msgb[0].as_slice();
             match cmd {
                 b"hb" => {
-                    last_broker_pulse = Instant::now();
+                    last_bk_hb_in = Instant::now();
                 }
                 b"spawn" => {
                     let id = de_u64(&msgb[1])?;
@@ -142,6 +177,33 @@ fn main() -> Result<()> {
                 _ => (),
             }
         }
+
+        while let Ok(msgb) = worker_sock.recv_multipart(zmq::DONTWAIT) {
+            let wkid = to_router_id_array(msgb[0].clone())?;
+            let cmd = &msgb[1][..];
+            match cmd {
+                b"hb" => {
+                    workers
+                        .entry(wkid)
+                        .and_modify(|wk| wk.last_pulse = Instant::now());
+                }
+                b"register" => {
+                    let exp_id = de_u64(&msgb[2])?;
+                    workers.insert(
+                        wkid,
+                        Worker {
+                            exp_id,
+                            last_pulse: Instant::now(),
+                        },
+                    );
+                }
+                b"drop" => {
+                    workers.remove(&wkid);
+                }
+                _ => (),
+            }
+        }
+
         Ok(())
     };
 

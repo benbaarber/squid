@@ -51,6 +51,7 @@
 
 - hb
 - register (id: `u64`)
+- drop
 
 ### Worker -> Broker
 
