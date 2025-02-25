@@ -29,7 +29,7 @@ save_percent = 0.10
 data = ["h1", "h2", "h3"]
 "#;
 
-pub const DOCKERFILE: &str = r#"FROM python:3.11
+pub const DOCKERFILE: &str = r#"FROM python:3.12
 
 WORKDIR /app
 
