@@ -7,7 +7,7 @@ Squid is an asynchronous neuroevolution architecture built using ZeroMQ and writ
 Squid consists of four core components:
 
 1. **Broker** - Manages the evolution process and distributes work.
-2. **Manager** - Handles containerized workers on worker hosts.
+2. **Node** - Handles containerized workers on squid nodes.
 3. **Worker** - Runs simulations for agents and calculates fitness.
 4. **Client (CLI)** - Initiates and monitors experiments.
 
@@ -29,12 +29,11 @@ Each component has a specific role in the architecture, contributing to Squid's 
 
 ---
 
-### Manager
+### Node
 - **Type**: Long-running, experiment-agnostic process.
 - **Responsibilities**:
   - Spawns and manages task containers upon requests from the broker.
   - Facilitates parallel execution by creating multiple workers.
-  - Planned: Manage heartbeats for all containers on the host to ensure reliability and fault detection.
 - **Deployment**:
   - Deployed on one or more worker host machines.
 
@@ -52,7 +51,7 @@ Each component has a specific role in the architecture, contributing to Squid's 
     - The executable set as the Docker image's entrypoint.
   - The rest of the logic and implementation is entirely user-defined and opaque to the architecture.
 - **Deployment**:
-  - Spawned and terminated by the manager process on worker hosts.
+  - Spawned and terminated by the node process on worker hosts.
 
 ---
 

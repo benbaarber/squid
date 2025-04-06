@@ -27,18 +27,27 @@ pub fn pull(image: &str) -> io::Result<ExitStatus> {
     Command::new("docker").args(["pull", image]).spawn()?.wait()
 }
 
-pub fn run(image: &str, broker_wk_env: &str, label: &str, id: &str) -> io::Result<Child> {
+pub fn run(
+    image: &str,
+    id_hex: &str,
+    broker_base_url: &str,
+    port: &str,
+    num_threads: &str,
+) -> io::Result<Child> {
+    let label = "squid_id=".to_string() + &id_hex;
     Command::new("docker")
         .args([
             "run",
             "--rm",
             "-d",
-            "-e",
-            broker_wk_env,
             "-l",
-            label,
+            &label,
             image,
-            id,
+            // Args passed to container...
+            id_hex,
+            broker_base_url,
+            port,
+            num_threads,
         ])
         .spawn()
 }

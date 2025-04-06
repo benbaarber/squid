@@ -126,7 +126,7 @@ impl<S: Species> GenericPopulation for Population<S> {
             .take(num_save)
             .map(|a| serde_json::to_string(&a.genome))
             .collect::<serde_json::Result<Vec<_>>>()?;
-        let pack = bincode::serialize(&packed_agents)?;
+        let pack = serde_json::to_vec(&packed_agents)?;
         Ok(pack)
     }
 

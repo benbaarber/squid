@@ -1,15 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["broker", "cli", "manager", "shared"]
+members = ["broker", "cli", "node", "shared"]
 
 [workspace.dependencies]
-anyhow = "1.0.94"
-bincode = "1.3.3"
-clap = { version = "4.5.23", features = ["derive"] }
-log = { version = "0.4.22", features = ["std"] }
+anyhow = "1.0.97"
+clap = { version = "4.5.35", features = ["derive"] }
+log = { version = "0.4.27", features = ["std"] }
 rand = "0.9.0"
-serde = { version = "1.0.215", features = ["derive"] }
-serde_json = "1.0.133"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
 shared = { version = "0.1.0", path = "shared" }
-toml = "0.8.19"
+toml = "0.8.20"
 zmq = "0.10.0"

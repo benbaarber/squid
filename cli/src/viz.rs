@@ -8,12 +8,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use layout::Flex;
-use log::{info, warn, Level};
+use log::{Level, error, info, warn};
 use ratatui::{prelude::*, widgets::*};
-use shared::{de_u32, de_usize, Blueprint, ManagerStatus, PopEvaluation};
+use shared::{Blueprint, NodeStatus, PopEvaluation, de_u8, de_u64, de_usize};
 use style::{Styled, Stylize};
 use text::ToSpan;
 
@@ -83,7 +83,7 @@ impl App {
                 Ok(ControlFlow::Continue(_)) => (),
                 Err(e) => {
                     // TODO: this is not chill
-                    // panic!("TUI error: {}", e)
+                    error!("TUI error: {}", e);
                     break;
                 }
             }
@@ -139,7 +139,7 @@ impl App {
                                 self.agents_done = 0;
                             }
                             b"done" => {
-                                let evaluation: PopEvaluation = bincode::deserialize(&msgb[3])?;
+                                let evaluation: PopEvaluation = serde_json::from_slice(&msgb[3])?;
                                 self.avg_fitnesses.push((
                                     (self.avg_fitnesses.len() + 1) as f64,
                                     evaluation.avg_fitness,
@@ -160,19 +160,23 @@ impl App {
                             self.agents_done += 1;
                         }
                     }
-                    b"manager" => {
-                        let mgid = de_u32(&msgb[1])?;
-                        let status: ManagerStatus = bincode::deserialize(&msgb[2])?;
+                    b"node" => {
+                        let nd_id = de_u64(&msgb[1])?;
+                        let status_u8 = de_u8(&msgb[2])?;
+                        let Some(status) = NodeStatus::from_repr(status_u8) else {
+                            warn!("🐋 Node {:x} sent an invalid status: {}", nd_id, status_u8);
+                            continue;
+                        };
                         match status {
-                            ManagerStatus::Pulling => {
-                                info!("🐋 Manager {:x} is pulling the docker image...", mgid)
+                            NodeStatus::Pulling => {
+                                info!("🐋 Node {:x} is pulling the docker image...", nd_id)
                             }
-                            ManagerStatus::Crashed => warn!("🐋 Manager {:x} crashed", mgid),
-                            ManagerStatus::Active => {
-                                info!("🐋 Manager {:x} spawned your containers...", mgid)
+                            NodeStatus::Crashed => warn!("🐋 Node {:x} crashed", nd_id),
+                            NodeStatus::Active => {
+                                info!("🐋 Node {:x} spawned your containers...", nd_id)
                             }
-                            ManagerStatus::Idle => {
-                                info!("🐋 Manager {:x} is loafing around...", mgid)
+                            NodeStatus::Idle => {
+                                info!("🐋 Node {:x} is loafing around...", nd_id)
                             }
                         }
                     }

@@ -1,5 +1,4 @@
 mod logger;
-mod template;
 mod viz;
 
 use core::str;
@@ -11,12 +10,12 @@ use std::{
     thread,
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Local;
 use clap::{Parser, Subcommand};
 use log::{error, info};
 use serde_json::Value;
-use shared::{bail_assert, de_usize, docker, env, Blueprint, PopEvaluation};
+use shared::{Blueprint, PopEvaluation, bail_assert, de_usize, docker, env};
 use viz::App;
 
 #[derive(Parser)]
@@ -63,14 +62,29 @@ fn main() -> Result<()> {
     match &args.command {
         Commands::Init { path } => {
             fs::create_dir_all(path)?;
-            fs::write(path.join("blueprint.toml"), template::BLUEPRINT)?;
-            fs::write(path.join(".env"), template::DOTENV)?;
-            fs::write(path.join("Dockerfile"), template::DOCKERFILE)?;
-            fs::write(path.join("requirements.txt"), "")?;
-            fs::write(path.join(".gitignore"), template::GITIGNORE)?;
+            fs::write(
+                path.join("blueprint.toml"),
+                include_bytes!("../templates/blueprint.toml"),
+            )?;
+            fs::write(
+                path.join(".env"),
+                include_bytes!("../templates/template.env"),
+            )?;
+            fs::write(
+                path.join("Dockerfile"),
+                include_bytes!("../templates/Dockerfile"),
+            )?;
+            fs::write(path.join("requirements.txt"), b"")?;
+            fs::write(
+                path.join(".gitignore"),
+                include_bytes!("../templates/template.gitignore"),
+            )?;
             let sim_dir = path.join("simulation");
             fs::create_dir(&sim_dir)?;
-            fs::write(sim_dir.join("main.py"), template::MAINPY)?;
+            fs::write(
+                sim_dir.join("main.py"),
+                include_bytes!("../templates/simulation/main.py"),
+            )?;
 
             println!(
                 "🦑 Initialized Squid project in {}",
@@ -166,11 +180,11 @@ fn main() -> Result<()> {
                         "🔧 Seeding population from `{}`",
                         seed_dir.canonicalize()?.display()
                     );
-                    bincode::serialize(&seeds)?
+                    serde_json::to_vec(&seeds)?
                 }
                 None => {
                     let seeds = Vec::<Vec<u8>>::with_capacity(0);
-                    bincode::serialize(&seeds)?
+                    serde_json::to_vec(&seeds)?
                 }
             };
 
@@ -184,7 +198,7 @@ fn main() -> Result<()> {
             let bthread_sock = ctx.socket(zmq::PAIR)?;
             bthread_sock.bind("inproc://broker_loop")?;
             let bthread = thread::spawn(move || -> Result<()> {
-                let id_b = id.to_le_bytes();
+                let id_b = id.to_be_bytes();
                 let tui_sock = ctx.socket(zmq::PAIR)?;
                 tui_sock.connect("inproc://broker_loop")?;
                 let broker_sock = ctx.socket(zmq::DEALER)?;
@@ -257,7 +271,7 @@ fn broker_loop(
                 tui_sock.send_multipart(&msgb[2..], 0)?;
 
                 if msgb[2] == b"gen" && msgb[4] == b"done" {
-                    let evaluation: PopEvaluation = bincode::deserialize(&msgb[5])?;
+                    let evaluation: PopEvaluation = serde_json::from_slice(&msgb[5])?;
                     let path = out_dir.join("data/fitness_scores.csv");
                     let file = OpenOptions::new().append(true).open(path)?;
                     let mut wtr = csv::Writer::from_writer(file);
@@ -273,8 +287,8 @@ fn broker_loop(
                 match save_type {
                     b"population" => {
                         let agents_dir = out_dir.join("agents");
-                        let agents: Vec<String> = bincode::deserialize(&msgb[3])
-                            .context("bincode failed to deserialize agents")?;
+                        let agents: Vec<String> = serde_json::from_slice(&msgb[3])
+                            .context("failed to deserialize agents")?;
                         for (i, agent) in agents.into_iter().enumerate() {
                             let path = agents_dir.join(format!("agent_{}.json", i));
                             fs::write(path, agent)?;

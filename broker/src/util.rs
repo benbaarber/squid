@@ -1,4 +1,3 @@
-
 /// Macro for deserializing a blueprint into a population with a given
 /// species and genome type, and returning a boxed trait object
 ///

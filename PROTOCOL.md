@@ -21,50 +21,53 @@
     - running
     - done
     - failed (message: `str`)
-  - manager (mgid: `u32`) (status: `ManagerStatus`)
+  - node (node_id: `u64`) (status: `NodeStatus`)
 - save (id: `u64`)
   - population (agents: `Vec<json>`)
   - data (gen: `u32`) (data: `json`)
 - done (id: `u64`)
 - error (message: `str`)
 
-### Broker -> Manager
+### Broker -> Node
 
 - hb
 - registered
-- spawn (id: `u64`) (task_image: `str`)
+- spawn (id: `u64`) (task_image: `str`) (port: `str`)
 - abort (id: `u64`)
 - [TODO] meta (info req)
 
-### Manager -> Broker
+### Node -> Broker
 
 - hb
 - register (num_workers: `u32`)
-- status (status: `ManagerStatus`) 
+- status (status: `NodeStatus`)
 - [TODO] meta (info res)
 
-### Manager -> Worker
+### Supervisor -> Experiment Thread
+
+- (id: `u64`) register (wk_ids: `json [int]`)
+- (id: `u64`) ok
+- (id: `u64`) dead (dead_wk_ids: `json [int]`) (new_wk_ids: `json [int]`)
+
+### Experiment Thread -> Supervisor
 
 - hb
+- registered
+- stop
+- kill
 
-### Worker -> Manager
+### Worker -> Experiment Thread
 
-- hb
-- register (id: `u64`)
-- drop
-
-### Worker -> Broker
-
-- (id: `u64`) ready
-- (id: `u64`) done (gen: `u32`) (ix: `u32`) (fitness: `f64`)
-- (id: `u64`) moredata (gen: `u32`) (ix: `u32`) (data: `json`)
+- (id: `u64`) init
+- (id: `u64`) sim (gen: `u32`) (ix: `u32`) (fitness: `f64`)
+- (id: `u64`) data (gen: `u32`) (ix: `u32`) (data: `json`)
 - (id: `u64`) error (gen: `u32`) (ix: `u32`) (message: `str`)
 
-### Broker -> Worker
+### Experiment Thread -> Worker
 
-- (id: `u64`) sim (gen: `u32`) (ix: `u32`) (agent: `json`)
-- (id: `u64`) moredata (gen: `u32`) (ix: `u32`)
-- (id: `u64`) kill
+- sim (gen: `u32`) (ix: `u32`) (agent: `json`)
+- data (gen: `u32`) (ix: `u32`)
+- kill
 
 ### Client Broker thread -> TUI Thread
 
@@ -80,7 +83,12 @@
 
 ## Ports
 
-5554 - manager (router) <- worker (dealer)
 5555 - broker (router) <- client (dealer)
-5556 - broker (router) <- manager (dealer)
-5557+ - broker (router) <- worker (dealer)
+5556 - broker (router) <- node (dealer)
+
+5600-5700 reserved:
+5600 - broker experiment 1 thread (router) <- worker (dealer)
+5601 - broker experiment 1 thread (router) <- worker master (dealer)
+5602 - broker experiment 2 thread (router) <- worker (dealer)
+5603 - broker experiment 2 thread (router) <- worker master (dealer)
+...

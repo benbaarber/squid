@@ -2,8 +2,9 @@ pub mod docker;
 
 use std::{collections::HashMap, path::PathBuf};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
+use strum::FromRepr;
 use toml::Value;
 
 // structs
@@ -44,10 +45,10 @@ pub struct PopEvaluation {
     pub avg_fitness: f64,
 }
 
-/// Enum to represent the status of a manager process
+/// Enum to represent the status of a squid node
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, FromRepr)]
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub enum ManagerStatus {
+pub enum NodeStatus {
     Idle,
     Active,
     Pulling,
@@ -60,42 +61,50 @@ pub fn env(key: &str) -> Result<String> {
     std::env::var(key).with_context(|| format!("${} not set", key))
 }
 
-pub fn de_usize(frame: &[u8]) -> Result<usize> {
-    Ok(de_u32(frame)? as usize)
+pub fn de_usize(bytes: &[u8]) -> Result<usize> {
+    Ok(de_u32(bytes)? as usize)
 }
 
-pub fn de_u32(frame: &[u8]) -> Result<u32> {
-    let len = frame.len();
-    let bytes: [u8; 4] = frame
+pub fn de_u8(bytes: &[u8]) -> Result<u8> {
+    let len = bytes.len();
+    let bytes: [u8; 1] = bytes
+        .try_into()
+        .map_err(|_| anyhow!("Invalid slice length for u8 conversion: {}", len))?;
+    Ok(u8::from_be_bytes(bytes))
+}
+
+pub fn de_u32(bytes: &[u8]) -> Result<u32> {
+    let len = bytes.len();
+    let bytes: [u8; 4] = bytes
         .try_into()
         .map_err(|_| anyhow!("Invalid slice length for u32 conversion: {}", len))?;
-    Ok(u32::from_le_bytes(bytes))
+    Ok(u32::from_be_bytes(bytes))
 }
 
-pub fn de_u64(frame: &[u8]) -> Result<u64> {
-    let len = frame.len();
-    let bytes: [u8; 8] = frame
+pub fn de_u64(bytes: &[u8]) -> Result<u64> {
+    let len = bytes.len();
+    let bytes: [u8; 8] = bytes
         .try_into()
         .map_err(|_| anyhow!("Invalid slice length for u64 conversion: {}", len))?;
-    Ok(u64::from_le_bytes(bytes))
+    Ok(u64::from_be_bytes(bytes))
 }
 
-pub fn de_f64(frame: &[u8]) -> Result<f64> {
-    let len = frame.len();
-    let bytes: [u8; 8] = frame
+pub fn de_f64(bytes: &[u8]) -> Result<f64> {
+    let len = bytes.len();
+    let bytes: [u8; 8] = bytes
         .try_into()
         .map_err(|_| anyhow!("Invalid slice length for f64 conversion: {}", len))?;
-    Ok(f64::from_le_bytes(bytes))
+    Ok(f64::from_be_bytes(bytes))
 }
 
-pub fn de_router_id(frame: &[u8]) -> Result<u32> {
-    let bytes: [u8; 4] = frame[1..]
+pub fn de_router_id(bytes: &[u8]) -> Result<u32> {
+    let bytes: [u8; 4] = bytes[1..]
         .try_into()
         .map_err(|_| anyhow!("Byte array should be 5 bytes long"))?;
-    Ok(u32::from_le_bytes(bytes))
+    Ok(u32::from_be_bytes(bytes))
 }
 
-pub fn to_router_id_array(router_id: Vec<u8>) -> Result<[u8; 5]> {
+pub fn to_router_id_array(router_id: &[u8]) -> Result<[u8; 5]> {
     router_id
         .try_into()
         .map_err(|_| anyhow!("Byte vec should be 5 bytes long for router id conversion"))
@@ -139,7 +148,10 @@ impl Blueprint {
                 let species = CTRNNSpecies::deserialize(self.species.clone())
                     .context("Invalid CTRNN species")?;
                 let total_size = species.input_size + species.hidden_size + species.output_size;
-                bail_assert!(total_size > 0, "total size (species.input_size + species.hidden_size + species.output_size) must be at least 1");
+                bail_assert!(
+                    total_size > 0,
+                    "total size (species.input_size + species.hidden_size + species.output_size) must be at least 1"
+                );
                 bail_assert!(
                     species.step_size > 0.0,
                     "species.step_size must be greater than 0"
@@ -203,7 +215,12 @@ impl GAConfig {
     pub fn display(&self) -> String {
         format!(
             "Population size: {}\nNum generations: {}\nElitism percent: {}\nRandom percent: {}\nMutation chance: {}\nMutation magnitude: {}",
-            self.population_size, self.num_generations, self.elitism_percent, self.random_percent, self.mutation_chance, self.mutation_magnitude
+            self.population_size,
+            self.num_generations,
+            self.elitism_percent,
+            self.random_percent,
+            self.mutation_chance,
+            self.mutation_magnitude
         )
     }
 }

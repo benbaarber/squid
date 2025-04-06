@@ -1,45 +1,86 @@
-import os
-import struct
+import math
+from multiprocessing import Process
+import random
 import sys
-from threading import Thread
-from typing import Callable
+
 import orjson
 import zmq
+from squid.util import *
 
 
-def _mg_loop(ctx: zmq.SyncContext, exp_id_b: bytes):
-    main_sock = ctx.socket(zmq.PAIR)
-    main_sock.connect("inproc://thread")
-
-    mg_sock = ctx.socket(zmq.DEALER)
-    mg_sock.setsockopt(zmq.LINGER, 0)
-    mg_sock.connect("tcp://172.17.0.1:5554")
-    mg_sock.send_multipart([b"register", exp_id_b])
-
-    poller = zmq.Poller()
-    poller.register(main_sock, zmq.POLLIN)
-    poller.register(mg_sock, zmq.POLLIN)
+def _worker(sim_fn: SimFn, worker_url: str, exp_id_b: bytes, wk_id: int):
+    ctx = zmq.Context()
+    ga_sock = ctx.socket(zmq.DEALER)
+    ga_sock.setsockopt(zmq.IDENTITY, se_u64(wk_id))
+    ga_sock.connect(worker_url)
 
     try:
+        ga_sock.send_multipart([exp_id_b, b"init"])
+
+        cur_gen = 0
+        best_ix = 0
+        best_fitness = -math.inf
+        best_data = None
+
         while True:
-            sockets: dict[zmq.SyncSocket, int] = dict(poller.poll())
+            msgb = ga_sock.recv_multipart()
 
-            if main_sock in sockets:
-                cmd = main_sock.recv()
-                if cmd == b"kill":
+            cmd = msgb[0]
+            match cmd:
+                case b"sim":
+                    gen_num_b = msgb[1]
+                    gen_num = de_i32(gen_num_b)
+                    agent_ix_b = msgb[2]
+                    genome = orjson.loads(msgb[3])
+
+                    fitness, data = sim_fn(genome)
+
+                    if gen_num != cur_gen:
+                        cur_gen = gen_num
+                        best_ix = 0
+                        best_fitness = -math.inf
+                        best_data = None
+
+                    if fitness > best_fitness:
+                        best_fitness = fitness
+                        best_data = data
+                        best_ix = de_i32(agent_ix_b)
+
+                    ga_sock.send_multipart(
+                        [exp_id_b, b"sim", gen_num_b, agent_ix_b, se_f64(fitness)]
+                    )
+                case b"data":
+                    gen_num_b = msgb[1]
+                    gen_num = de_i32(gen_num_b)
+                    agent_ix_b = msgb[2]
+                    agent_ix = de_i32(agent_ix_b)
+
+                    if gen_num != cur_gen:
+                        print(
+                            f"Bad data request - generation mismatch, expected gen was {cur_gen}, requested gen {gen_num}"
+                        )
+
+                    if agent_ix != best_ix:
+                        print(
+                            f"Bad data request - agent index mismatch, best index was {best_ix}, requested index {agent_ix}"
+                        )
+
+                    ga_sock.send_multipart(
+                        [
+                            exp_id_b,
+                            b"data",
+                            gen_num_b,
+                            agent_ix_b,
+                            orjson.dumps(best_data),
+                        ]
+                    )
+                case b"kill":
                     break
-
-            if mg_sock in sockets:
-                msgb = mg_sock.recv_multipart()
-                if msgb[0] == b"hb":
-                    mg_sock.send(b"hb")
     finally:
-        mg_sock.send(b"drop")
-        mg_sock.close()
-        main_sock.close()
+        ctx.destroy()
 
 
-def run(sim_fn: Callable[[dict], tuple[float, dict | None]]):
+def run(sim_fn: SimFn):
     """
     Run the simulation loop.
 
@@ -57,107 +98,95 @@ def run(sim_fn: Callable[[dict], tuple[float, dict | None]]):
         where the rows are lists of floats that line up with the headers specified in the blueprint.
         These rows will be appended to the csv files for the best agent after each generation.
     """
-    exp_id_b = struct.pack("<Q", int(sys.argv[1], base=16))
-
-    broker_url = os.environ.get("SQUID_BROKER_WK_SOCK_URL")
-    if broker_url is None:
-        raise EnvironmentError(
-            "Environment variable 'SQUID_BROKER_WK_SOCK_URL' is undefined."
-        )
+    exp_id_b = se_u64(int(sys.argv[1], base=16))
+    broker_url = sys.argv[2]
+    port = int(sys.argv[3])
+    num_procs = int(sys.argv[4])
 
     if not callable(sim_fn):
         raise ValueError(
             "The sim_fn argument must be a callable that accepts a dict and returns a dict."
         )
 
+    wk_url = f"{broker_url}:{port}"
+    sv_url = f"{broker_url}:{port+1}"
+
+    sv_id = random.getrandbits(64)
+
     ctx = zmq.Context()
 
     ga_sock = ctx.socket(zmq.DEALER)
-    ga_sock.connect(broker_url)
-    ga_sock.send_multipart([exp_id_b, b"ready"])
+    ga_sock.setsockopt(zmq.IDENTITY, se_u64(sv_id))
+    ga_sock.connect(sv_url)
 
-    thread_sock = ctx.socket(zmq.PAIR)
-    thread_sock.bind("inproc://thread")
-
-    mg_thread = Thread(target=_mg_loop, args=(ctx, exp_id_b))
-    mg_thread.start()
+    worker_ids = [random.getrandbits(64) for _ in range(num_procs)]
+    workers: dict[int, Process] = {}
 
     try:
-        current_gen = 0
-        best_agent_fitness = 0.0
-        best_agent_data = None
-
-        while ga_sock.poll(3e5):
+        ga_sock.send_multipart(
+            [exp_id_b, b"register", orjson.dumps(worker_ids)]
+        )
+        
+        while ga_sock.poll(5000):
             msgb = ga_sock.recv_multipart()
-            cmd = msgb[1]
+            cmd = msgb[0]
             match cmd:
-                case b"sim":
-                    try:
-                        gen: int = struct.unpack("<I", msgb[2])
-                        if gen != current_gen:
-                            best_agent_fitness = 0.0
-                            best_agent_data = None
-                            current_gen = gen
-
-                        agent = orjson.loads(msgb[4])
-                        # TODO THIS BLOCKS, so need separate thread or async for responding to heartbeats from manager
-                        fitness, data = sim_fn(agent)
-                        if fitness > best_agent_fitness:
-                            best_agent_fitness = fitness
-                            best_agent_data = data
-                        fitness_b = struct.pack("<d", fitness)
-                        ga_sock.send_multipart(
-                            [
-                                exp_id_b,
-                                b"done",
-                                msgb[2],
-                                msgb[3],
-                                fitness_b,
-                            ]
-                        )
-                        ga_sock.send_multipart([exp_id_b, b"ready"])
-                    except Exception as e:
-                        ga_sock.send_multipart(
-                            [
-                                exp_id_b,
-                                b"error",
-                                msgb[2],
-                                msgb[3],
-                                f"Worker error (sim): {e}".encode(),
-                            ]
-                        )
-                        print("Simulation error:", str(e))
-                case b"moredata":
-                    try:
-                        gen: int = struct.unpack("<I", msgb[2])
-                        if gen != current_gen:
-                            raise ValueError(
-                                f"moredata generation mismatch from broker, expected gen {current_gen}, got gen {gen}"
-                            )
-
-                        data_b = orjson.dumps(best_agent_data)
-                        ga_sock.send_multipart(
-                            [exp_id_b, b"moredata", msgb[2], msgb[3], data_b]
-                        )
-                    except Exception as e:
-                        ga_sock.send_multipart(
-                            [
-                                exp_id_b,
-                                b"error",
-                                msgb[2],
-                                msgb[3],
-                                f"Worker error (moredata): {e}".encode(),
-                            ]
-                        )
-                        print("Error:", e)
-                case b"kill":
+                case b"registered":
+                    print("Registered with broker")
                     break
-                case _:
-                    print("Received invalid command:", cmd)
+                case b"stop" | b"kill":
+                    ctx.destroy()
+                    return
+        
+        for wk_id in worker_ids:
+            p = Process(
+                target=_worker,
+                args=(sim_fn, wk_url, exp_id_b, wk_id),
+                name=f"squid_sim_proc_{wk_id:x}",
+            )
+            workers[wk_id] = p
+            p.start()
 
-        thread_sock.send(b"kill")
-        mg_thread.join()
+        BK_TTL = 15000
+
+        while ga_sock.poll(BK_TTL):
+            msgb = ga_sock.recv_multipart()
+            cmd = msgb[0]
+            match cmd:
+                case b"hb":
+                    dead = [wk_id for wk_id, p in workers.items() if not p.is_alive()]
+                    if len(dead) > 0:
+                        new = []
+                        for wk_id in dead:
+                            del workers[wk_id]
+                            new_wk_id = random.getrandbits(64)
+                            p = Process(
+                                target=_worker,
+                                args=(sim_fn, wk_url, exp_id_b, new_wk_id),
+                                name=f"squid_sim_proc_{new_wk_id:x}",
+                            )
+                            workers[new_wk_id] = p
+                            new.append(new_wk_id)
+                            p.start()
+                        ga_sock.send_multipart(
+                            [exp_id_b, b"dead", orjson.dumps(dead), orjson.dumps(new)]
+                        )
+                    else:
+                        ga_sock.send_multipart([exp_id_b, b"ok"])
+                case b"registered":
+                    ...
+                case b"stop":
+                    for p in workers.values():
+                        p.join()
+                    break
+                case b"kill":
+                    for p in workers.values():
+                        p.kill()
+                    break
+        else:
+            print("Broker went offline, terminating...")
+            for p in workers.values():
+                # TODO verify terminate works
+                p.terminate()
     finally:
-        ga_sock.close()
-        thread_sock.close()
-        ctx.term()
+        ctx.destroy()
