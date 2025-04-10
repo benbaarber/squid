@@ -9,4 +9,4 @@ def simulation(agent):
 
 
 if __name__ == "__main__":
-    squid.run(simulation)
+    squid.worker(simulation)

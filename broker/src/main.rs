@@ -416,65 +416,57 @@ fn experiment_loop(ctx: &zmq::Context, main_sock: &zmq::Socket) -> Result<Contro
                     continue;
                 }
 
-                let cmd = msgb[2].as_slice();
-                match cmd {
-                    b"register" => {
-                        let wk_ids: HashSet<u64> = serde_json::from_slice(&msgb[3])?;
-                        let num_workers = wk_ids.len();
+                if msgb[2] == b"register" {
+                    let wk_ids: HashSet<u64> = serde_json::from_slice(&msgb[3])?;
+                    let num_workers = wk_ids.len();
 
-                        for id in &wk_ids {
-                            workers.insert(
-                                *id,
-                                Worker {
-                                    supervisor_id: sv_id,
-                                    agent_ix: None,
-                                },
-                            );
-                        }
-                        supervisors.insert(
-                            sv_id,
-                            Supervisor {
-                                last_pulse: Instant::now(),
-                                worker_ids: wk_ids,
+                    for id in &wk_ids {
+                        workers.insert(
+                            *id,
+                            Worker {
+                                supervisor_id: sv_id,
+                                agent_ix: None,
                             },
                         );
-                        sv_router.send_multipart([sv_id_b, b"registered"], 0)?;
-                        println!(
-                            "[Experiment {}] Supervisor {:x} registered with {} workers",
-                            &exp_id_hex, sv_id, num_workers,
-                        );
                     }
+                    supervisors.insert(
+                        sv_id,
+                        Supervisor {
+                            last_pulse: Instant::now(),
+                            worker_ids: wk_ids,
+                        },
+                    );
+                    sv_router.send_multipart([sv_id_b, b"registered"], 0)?;
+                    println!(
+                        "[Experiment {}] Supervisor {:x} registered with {} workers",
+                        &exp_id_hex, sv_id, num_workers,
+                    );
+                    continue;
+                }
+
+                if !supervisors.contains_key(&sv_id) {
+                    println!(
+                        "[Experiment {}] Received message from unregistered supervisor {:x}. Killing supervisor.",
+                        &exp_id_hex, sv_id
+                    );
+                    sv_router.send_multipart([sv_id_b, b"kill"], 0)?;
+                    continue;
+                }
+
+                let cmd = msgb[2].as_slice();
+                match cmd {
                     b"dead" => {
-                        let Some(sv) = supervisors.get_mut(&sv_id) else {
-                            println!(
-                                "[Experiment {}] Supervisor {:x} sent `dead` command but is not registered. Ignoring.",
-                                &exp_id_hex, sv_id
-                            );
-                            continue;
-                        };
-
                         let dead: Vec<u64> = serde_json::from_slice(&msgb[3])?;
-                        let new: Vec<u64> = serde_json::from_slice(&msgb[4])?;
-
                         for wk_id in dead {
                             let worker = workers.remove(&wk_id);
-                            sv.worker_ids.remove(&wk_id);
+                            supervisors.entry(sv_id).and_modify(|sv| {
+                                sv.worker_ids.remove(&wk_id);
+                            });
                             if let Some(worker) = worker {
                                 if let Some(ix) = worker.agent_ix {
                                     agent_queue.push(ix);
                                 }
                             }
-                        }
-
-                        for wk_id in new {
-                            workers.insert(
-                                wk_id,
-                                Worker {
-                                    supervisor_id: sv_id,
-                                    agent_ix: None,
-                                },
-                            );
-                            sv.worker_ids.insert(wk_id);
                         }
                     }
                     _ => (),

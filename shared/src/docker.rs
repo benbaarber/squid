@@ -34,7 +34,11 @@ pub fn run(
     port: &str,
     num_threads: &str,
 ) -> io::Result<Child> {
-    let label = "squid_id=".to_string() + &id_hex;
+    let label = "squid_id=".to_string() + id_hex;
+    let id_hex_env = "SQUID_EXP_ID=".to_string() + id_hex;
+    let url_env = "SQUID_URL=".to_string() + broker_base_url;
+    let port_env = "SQUID_PORT=".to_string() + port;
+    let num_threads_env = "SQUID_NUM_THREADS=".to_string() + num_threads;
     Command::new("docker")
         .args([
             "run",
@@ -42,12 +46,15 @@ pub fn run(
             "-d",
             "-l",
             &label,
+            "-e",
+            &id_hex_env,
+            "-e",
+            &url_env,
+            "-e",
+            &port_env,
+            "-e",
+            &num_threads_env,
             image,
-            // Args passed to container...
-            id_hex,
-            broker_base_url,
-            port,
-            num_threads,
         ])
         .spawn()
 }

@@ -1,44 +1,31 @@
-# Squid Worker API
+# Squid Worker
 
-A Python API for running simulations in the Squid architecture.
+The Squid worker python API
 
 ## How It Works
 
-The `squid.run(sim_fn)` function starts a simulation loop:
-- Receives an agent from the Squid broker.
-- Passes the agent (as a `dict`) to your simulation function `sim_fn`.
+The `squid.worker(sim_fn)` function starts a simulation loop:
+- Receives an agent from the GA thread running on the Squid broker.
+- Passes the agent's parameters as a JSON string to your simulation function `sim_fn`.
 - Sends the fitness score and optional additional simulation data (as a `dict`) back to the broker.
 
 The loop terminates when there are no more agents to simulate.
 
 ## Installation
 
-### With SSH
-
-If your ssh key is linked to gitlab, and you have your ssh-agent set up, simply run:
-
 ```sh
-pip install "git+ssh://git@gitlab.com/VivumComputing/scientific/robotics/dnfs/evolution/squid.git#egg=squid&subdirectory=api/python"
-```
-
-### With HTTPS
-
-First configure your shell environment:
-
-```sh
-export GITLAB_TOKEN='<your gitlab personal access token>' # must have at least `read_repository` scope
-```
-
-Then run:
-
-```sh
-pip install "git+https://${GITLAB_TOKEN}@gitlab.com/VivumComputing/scientific/robotics/dnfs/evolution/squid.git#egg=squid&subdirectory=api/python"
+pip install "git+ssh://git@gitlab.com/VivumComputing/scientific/robotics/dnfs/evolution/squid.git#egg=squid&subdirectory=worker/python"
 ```
 
 ## Usage
 
-1. **Define Your Simulation Function**: 
-   Your function must take a single agent `dict` and return a fitness score `float` and an optional `dict` for additional simulation data. 
+### Generic Worker
+
+The generic worker takes in a simulation function and runs it as it receives agents from the GA.
+
+1. **Define your simulation function**
+
+   Your function must take a genome JSON string and return a fitness score `float` and an optional `dict` for additional simulation data. 
 
    The dict should mirror the `[csv_data]` section in your blueprint file and take the form:
    ```py
@@ -53,27 +40,35 @@ pip install "git+https://${GITLAB_TOKEN}@gitlab.com/VivumComputing/scientific/ro
    In other words, your function must match this signature:
 
    ```py
-   def my_simulation(agent: dict) -> tuple[float, dict[str, list[list[float]]] | None]
+   def my_simulation(genome: str) -> tuple[float, dict[str, list[list[float]]] | None]
    ```
 
    An example:
 
    ```py
-   def my_simulation(agent):
-       # Process agent and return a result
-       fitness = 12.4
-       sim_data = {
+   def my_simulation(genome):
+      # Deserialize genome
+      ctrnn = CTRNN(7, 4, 2)
+      ctrnn.load_genome_json(genome)
+
+      # Simulate
+      ...
+
+      # Process agent and return a result
+      fitness = 12.4
+      sim_data = {
          "sensor_outputs": [
             [0.1, 0.2, 0.3, 0.4], 
             [0.5, 0.6, 0.7, 0.8]
          ]
-       }
+      }
 
-       return fitness, sim_data
+      return fitness, sim_data
    ```
 
-2. **Create the entrypoint**: 
-   In your entrypoint file, call `squid.run()` with your simulation function:
+2. **Create the entrypoint**
+
+   In your entrypoint file, call `squid.worker()` with your simulation function:
 
    ```py
    import squid
@@ -81,22 +76,76 @@ pip install "git+https://${GITLAB_TOKEN}@gitlab.com/VivumComputing/scientific/ro
    ...
 
    if __name__ == "__main__":
-      squid.run(my_simulation)
+      squid.worker(my_simulation)
+   ```
+
+### ROS Worker
+
+The ROS worker is an extension of the Squid worker that is specific to running a multiagent simulation in ROS and Gazebo. It takes in a class that inherits from `squid.ros.AgentNode` (which in turn inherits from the ROS `Node` class) as well as the SDF string of the model to be simulated. 
+
+1. **Define your node class**
+
+   In the same way you start a python ROS node project, begin by creating a node class. However, instead of inheriting from rclpy's `Node`, inherit from squid's `AgentNode`.
+
+   ```py
+   import squid.ros
+
+   class ExampleNode(squid.ros.AgentNode):
+      def __init__(self, **kwargs):
+         super().__init__(**kwargs)
+         
+         # ROS node setup
+         ...
+      
+      # ROS node callbacks
+      ...
+   ```
+
+2. **Implement the `sim` method**
+
+   `AgentNode` also defines one abstract method called `sim`. This method has the same signature as the simulation function in the [generic worker](#generic-worker), and is called the same way internally.
+
+   ```py
+   import squid.ros
+   import rclpy
+
+   class ExampleNode(squid.ros.AgentNode):
+      ...
+
+      def sim(self, genome: str) -> tuple[float, dict[str, list[list[float]]] | None]:
+         # Deserialize genome
+         self.ctrnn.load_genome_json(genome)
+
+         # Reset drone
+         self.reset()
+
+         # Spin ros loop until exit condition is met, and collect data for fitness and evaluation
+         self.sim_done = False
+         while not self.sim_done:
+            rclpy.spin_once(self, timeout_sec=0.1)
+
+         # Evaluate agent
+         fitness = self.compute_fitness()
+
+         return fitness, self.data
+   ```
+
+3. **Create the entrypoint**
+
+   ```py
+   def main():
+      sdf = open("models/my_model/model.sdf").read()
+      squid.ros.ros_worker(ExampleNode, sdf)
    ```
 
 ## Requirements
 
+### Base
+
 - Python 3.11+
-- `pyzmq`
-- `orjson`
+- pyzmq
+- orjson
 
-## Development
+### ROS
 
-### Running it standalone
-
-To use the runner standalone, you will need to set the `SQUID_BROKER_WK_SOCK_URL` environment variable:
-```bash
-export SQUID_BROKER_WK_SOCK_URL="tcp://<broker-address>:5557"
-```
-
-Additionally, `squid.run()` expects the ID of the experiment to be passed as a command line argument. This is done automatically by the manager process when it spawns the containers, so currently, to use the runner standalone, you will have to start the experiment and then copy the ID and pass it as a command line argument manually.
+- rclpy

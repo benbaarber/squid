@@ -1,7 +1,13 @@
+from multiprocessing import Process
+import os
 import struct
 from typing import Callable
 
-SimFn = Callable[[dict], tuple[float, dict | None]]
+# (genome) -> fitness, data
+SimFn = Callable[[str], tuple[float, dict | None]]
+
+# (exp_id_b, wk_router_url, wk_ids) -> workers
+WorkerFactory = Callable[[bytes, str, list[int]], dict[int, Process]]
 
 
 def de_i32(bytes: bytes) -> int:
@@ -34,3 +40,10 @@ def de_u64(bytes: bytes) -> int:
 
 def se_u64(x: int) -> bytes:
     return struct.pack("!Q", x)
+
+
+def get_env_or_throw(key: str) -> str:
+    val = os.environ.get(key)
+    if val is None:
+        raise EnvironmentError(f"Environment variable {key} not set")
+    return val

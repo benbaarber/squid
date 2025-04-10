@@ -47,7 +47,7 @@
 
 - (id: `u64`) register (wk_ids: `json [int]`)
 - (id: `u64`) ok
-- (id: `u64`) dead (dead_wk_ids: `json [int]`) (new_wk_ids: `json [int]`)
+- (id: `u64`) dead (dead_wk_ids: `json [int]`)
 
 ### Experiment Thread -> Supervisor
 

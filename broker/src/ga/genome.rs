@@ -1,5 +1,5 @@
 use rand::Rng;
-use rand_distr::{Bernoulli, Distribution, Normal, StandardNormal};
+use rand_distr::{Bernoulli, Distribution, Normal, StandardNormal, Uniform};
 use serde::{Deserialize, Serialize};
 
 pub trait Species: Clone + Serialize {
@@ -72,6 +72,8 @@ impl Species for CTRNNSpecies {
         let size = self.input_size + self.hidden_size + self.output_size;
         let mut rng = rand::rng();
         let normal = Normal::new(1.0, 0.333).unwrap();
+        let tau_distr = Uniform::new(1e-5, 16.0).unwrap();
+        let weight_distr = Uniform::new(-16.0, 16.0).unwrap();
 
         let (min_tau, max_tau) = self.tau_bounds;
         let (min_weight, max_weight) = self.weight_bounds;
@@ -79,23 +81,17 @@ impl Species for CTRNNSpecies {
 
         CTRNNGenome {
             taus: (0..size)
-                .map(|_| rng.sample::<f64, _>(&normal).clamp(min_tau, max_tau))
+                .map(|_| rng.sample::<f64, _>(&tau_distr))
                 .collect(),
             weights: (0..size)
                 .map(|_| {
                     (0..size)
-                        .map(|_| {
-                            rng.sample::<f64, _>(StandardNormal)
-                                .clamp(min_weight, max_weight)
-                        })
+                        .map(|_| rng.sample::<f64, _>(&weight_distr))
                         .collect()
                 })
                 .collect(),
             biases: (0..size)
-                .map(|_| {
-                    rng.sample::<f64, _>(StandardNormal)
-                        .clamp(min_bias, max_bias)
-                })
+                .map(|_| rng.sample::<f64, _>(&weight_distr))
                 .collect(),
             gains: vec![1.0; size],
         }

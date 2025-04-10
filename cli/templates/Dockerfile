@@ -8,7 +8,6 @@ RUN --mount=type=ssh pip install git+ssh://git@gitlab.com/VivumComputing/scienti
 
 COPY simulation/ simulation/
 
-ENV SQUID_BROKER_WK_SOCK_URL='tcp://172.17.0.1:5557'
 ENV PYTHONPATH='/app'
 
 ENTRYPOINT [ "python", "simulation/main.py" ]
