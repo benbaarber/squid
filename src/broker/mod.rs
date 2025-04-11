@@ -1,7 +1,10 @@
 mod ga;
 mod util;
 
-use crate::{synthesize, util::{de_f64, de_u64, de_usize, Blueprint, NodeStatus}};
+use crate::{
+    synthesize,
+    util::{Blueprint, NodeStatus, de_f64, de_u64, de_usize},
+};
 use anyhow::{Context, Result, bail};
 use core::str;
 use ga::{

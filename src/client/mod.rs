@@ -22,10 +22,10 @@ use serde_json::Value;
 pub fn run(path: &Path) -> Result<()> {
     bail_assert!(docker::is_installed()?, "Docker must be installed");
 
-    let bpath = path.join("blueprint.toml");
+    let bpath = path.join("squid.toml");
     bail_assert!(
-        path.join("blueprint.toml").exists(),
-        "Invalid Squid project: No `blueprint.toml` found in {}",
+        path.join("squid.toml").exists(),
+        "Invalid Squid project: No `squid.toml` found in {}",
         path.canonicalize()?.display()
     );
     bail_assert!(

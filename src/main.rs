@@ -48,18 +48,18 @@ enum Commands {
         #[arg(short, long)]
         local: bool,
     },
+    /// Validate a blueprint file
+    Validate {
+        /// Blueprint file
+        #[arg(short, long, value_name = "FILE", default_value = "./squid.toml")]
+        blueprint: PathBuf,
+    },
     /// Abort the running experiment (deprecated)
     Abort,
     // {
     //     /// Experiment id, printed after calling `squid run`
     //     // id: String,
     // },
-    /// Validate a blueprint file
-    Validate {
-        /// Blueprint file
-        #[arg(short, long, value_name = "FILE", default_value = "./blueprint.toml")]
-        blueprint: PathBuf,
-    },
 }
 
 fn main() -> Result<()> {
@@ -69,8 +69,8 @@ fn main() -> Result<()> {
         Commands::Init { path } => {
             fs::create_dir_all(&path)?;
             fs::write(
-                path.join("blueprint.toml"),
-                include_bytes!("../templates/blueprint.toml"),
+                path.join("squid.toml"),
+                include_bytes!("../templates/squid.toml"),
             )?;
             fs::write(
                 path.join(".env"),

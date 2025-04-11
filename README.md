@@ -82,7 +82,7 @@ If that fails, ensure you have an SSH key registered with GitLab and that it is 
 
 1. **Build Your Simulation**:
    - Build the simulation that will run in the Squid workers
-   - Iteratively update your blueprint (the experiment configuration) and simulation logic
+   - Iteratively update your squid.toml (the experiment configuration or "blueprint") and simulation logic
    - Keep your CSV data format synchronized with your logic
 
 2. **Set Up and Validate Experiment**:
@@ -97,5 +97,5 @@ If that fails, ensure you have an SSH key registered with GitLab and that it is 
    - Use the TUI provided by the client to track progress in real time while the client collects results and simulation data
 
 5. **Refine and Iterate**:
-   - Use the results to refine your simulation logic or blueprint
+   - Use the results to refine your simulation logic or configuration
    - Repeat the process for improved outcomes
