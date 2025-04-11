@@ -1,23 +1,25 @@
-#![allow(unused)]
 use core::str;
 use std::{
-    io::{self, Stdout},
+    io::{self},
     ops::ControlFlow,
     sync::{Arc, Mutex},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, bail};
+use crate::util::{Blueprint, NodeStatus, PopEvaluation, de_u8, de_u64, de_usize};
+use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use layout::Flex;
 use log::{Level, error, info, warn};
-use ratatui::{prelude::*, widgets::*};
-use shared::{Blueprint, NodeStatus, PopEvaluation, de_u8, de_u64, de_usize};
-use style::{Styled, Stylize};
-use text::ToSpan;
+use ratatui::{
+    layout::Flex,
+    prelude::*,
+    style::{Styled, Stylize},
+    text::ToSpan,
+    widgets::*,
+};
 
-use crate::logger::{self, TUILog};
+use super::logger::{self, TUILog};
 
 #[derive(PartialEq, Eq)]
 pub enum AppState {
@@ -90,7 +92,7 @@ impl App {
         }
 
         ratatui::restore();
-        logger::flush(Arc::clone(&self.logs));
+        logger::flush(Arc::clone(&self.logs))?;
         Ok(())
     }
 

@@ -5,24 +5,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::util::{NodeStatus, de_u64, docker, env};
 use anyhow::Result;
-use clap::Parser;
-use shared::{NodeStatus, de_u64, docker, env};
 
-#[derive(Parser)]
-#[command(about = "Squid Node")]
-struct Args {
-    /// Number of worker threads to spawn, defaults to one container per core
-    #[arg(short, long)]
-    threads: Option<usize>,
-    /// For testing only. Run in local mode, assume any task image passed is already in the local docker library.
-    #[arg(short, long)]
-    local: bool,
-}
-
-fn main() -> Result<()> {
-    let args = Args::parse();
-
+pub fn run(threads: Option<usize>, local: bool) -> Result<()> {
     assert!(docker::is_installed()?);
 
     let id: u64 = rand::random();
@@ -37,7 +23,7 @@ fn main() -> Result<()> {
 
     let _status = NodeStatus::Idle;
     let cores = thread::available_parallelism()?.get();
-    let num_threads = args.threads.unwrap_or(cores).min(cores);
+    let num_threads = threads.unwrap_or(cores).min(cores);
     let num_threads_s = num_threads.to_string();
 
     println!("🐋 Squid node starting with ID {}", &id_hex);
@@ -128,7 +114,7 @@ fn main() -> Result<()> {
                 // println!("TASK ID: {}", &exp_id_hex);
                 // println!("TASK BROKER URL: {}", &broker_base_url);
                 // TODO FINISH
-                if !args.local {
+                if !local {
                     send_status(&broker_sock, NodeStatus::Pulling)?;
                     if !docker::pull(task_image)?.success() {
                         send_status(&broker_sock, NodeStatus::Crashed)?;

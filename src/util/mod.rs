@@ -97,19 +97,6 @@ pub fn de_f64(bytes: &[u8]) -> Result<f64> {
     Ok(f64::from_be_bytes(bytes))
 }
 
-pub fn de_router_id(bytes: &[u8]) -> Result<u32> {
-    let bytes: [u8; 4] = bytes[1..]
-        .try_into()
-        .map_err(|_| anyhow!("Byte array should be 5 bytes long"))?;
-    Ok(u32::from_be_bytes(bytes))
-}
-
-pub fn to_router_id_array(router_id: &[u8]) -> Result<[u8; 5]> {
-    router_id
-        .try_into()
-        .map_err(|_| anyhow!("Byte vec should be 5 bytes long for router id conversion"))
-}
-
 #[macro_export]
 macro_rules! bail_assert {
     ($cond:expr) => {

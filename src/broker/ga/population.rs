@@ -1,6 +1,6 @@
+use crate::util::{GAConfig, PopEvaluation};
 use anyhow::Result;
 use rand::seq::IndexedRandom;
-use shared::{GAConfig, PopEvaluation};
 
 use super::{agent::Agent, genome::Species};
 

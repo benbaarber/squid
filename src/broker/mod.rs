@@ -1,6 +1,7 @@
 mod ga;
 mod util;
 
+use crate::{synthesize, util::{de_f64, de_u64, de_usize, Blueprint, NodeStatus}};
 use anyhow::{Context, Result, bail};
 use core::str;
 use ga::{
@@ -9,7 +10,6 @@ use ga::{
     population::{GenericPopulation, Population},
 };
 use serde::Deserialize;
-use shared::{Blueprint, NodeStatus, de_f64, de_u64, de_usize};
 use std::{
     collections::{HashMap, HashSet},
     ops::ControlFlow,
@@ -36,7 +36,7 @@ struct Worker {
     agent_ix: Option<usize>,
 }
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     println!("🦑 Broker starting up...");
 
     let mut nodes = HashMap::<u64, Node>::new();
