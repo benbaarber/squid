@@ -77,8 +77,13 @@ def _worker_proc(sim_fn: SimFn, wk_id: int, exp_id_b: bytes, wk_router_url: str)
                     )
                 case b"kill":
                     break
+    except Exception as e:
+        ga_sock.send_multipart(
+            [exp_id_b, b"error", se_u32(cur_gen), agent_ix_b, str(e).encode()]
+        )
+        raise e
     finally:
-        ctx.destroy()
+        ctx.destroy(linger=0)
 
 
 def _supervisor(proc_factory: WorkerFactory):
@@ -87,8 +92,8 @@ def _supervisor(proc_factory: WorkerFactory):
     port = int(get_env_or_throw("SQUID_PORT"))
     num_procs = int(get_env_or_throw("SQUID_NUM_THREADS"))
 
-    wk_url = f"{broker_url}:{port}"
-    sv_url = f"{broker_url}:{port+1}"
+    wk_url = f"{broker_url}:{port+1}"
+    sv_url = f"{broker_url}:{port+2}"
 
     sv_id = random.getrandbits(64)
 
@@ -110,11 +115,11 @@ def _supervisor(proc_factory: WorkerFactory):
                     print("Registered with broker")
                     break
                 case b"stop" | b"kill":
-                    ctx.destroy()
+                    ctx.destroy(linger=0)
                     return
         else:
-            print("Broker did not respond, terminating...")
-            ctx.destroy()
+            print("Broker did not respond. Terminating.")
+            ctx.destroy(linger=0)
             return
 
         workers = proc_factory(exp_id_b, wk_url, worker_ids)
@@ -130,7 +135,7 @@ def _supervisor(proc_factory: WorkerFactory):
                         for wk_id in dead:
                             del workers[wk_id]
                         # TODO respawn maybe?
-                        ga_sock.send_multipart([exp_id_b, b"dead", orjson.dumps(dead)])
+                        ga_sock.send_multipart([exp_id_b, b"dead", orjson.dumps(dead)], copy=False, track=True)
                     else:
                         ga_sock.send_multipart([exp_id_b, b"ok"])
                 case b"registered":
@@ -144,12 +149,14 @@ def _supervisor(proc_factory: WorkerFactory):
                         p.kill()
                     break
         else:
-            print("Broker went offline, terminating...")
+            print("Broker went offline. Terminating.")
             for p in workers.values():
-                # TODO verify terminate works
-                p.terminate()
+                p.kill()
+    except Exception as e:
+        ga_sock.send_multipart([exp_id_b, b"error", str(e).encode()])
+        raise e
     finally:
-        ctx.destroy()
+        ctx.destroy(linger=0)
 
 
 def worker(sim_fn: SimFn):

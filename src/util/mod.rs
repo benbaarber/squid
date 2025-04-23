@@ -1,4 +1,5 @@
 pub mod docker;
+pub mod stdout_buffer;
 
 use std::{collections::HashMap, path::PathBuf};
 

@@ -5,10 +5,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::util::{NodeStatus, de_u64, docker, env};
+use crate::util::{NodeStatus, de_u32, de_u64, docker, env};
 use anyhow::Result;
+use tracing::{error, info, warn};
 
-pub fn run(threads: Option<usize>, local: bool) -> Result<()> {
+pub fn run(threads: Option<usize>, local: bool, test: bool) -> Result<()> {
     assert!(docker::is_installed()?);
 
     let id: u64 = rand::random();
@@ -26,9 +27,9 @@ pub fn run(threads: Option<usize>, local: bool) -> Result<()> {
     let num_threads = threads.unwrap_or(cores).min(cores);
     let num_threads_s = num_threads.to_string();
 
-    println!("🐋 Squid node starting with ID {}", &id_hex);
-    println!("🐋 Detected {} cores", cores);
-    println!("🐋 Max worker threads: {}", &num_threads_s);
+    info!("🐋 Squid node starting with ID {}", &id_hex);
+    info!("🐋 Detected {} cores", cores);
+    info!("🐋 Max worker threads: {}", &num_threads_s);
 
     let ctx = zmq::Context::new();
     let broker_sock = ctx.socket(zmq::DEALER)?;
@@ -52,21 +53,21 @@ pub fn run(threads: Option<usize>, local: bool) -> Result<()> {
             if broker_sock.poll(zmq::POLLIN, timeout).unwrap() > 0 {
                 let msgb = broker_sock.recv_multipart(0).unwrap();
                 if msgb[0].starts_with(b"registered") {
-                    println!("🔗 Registered with squid broker at {}", &broker_base_url);
+                    info!("🦑 Registered with squid broker at {}", &broker_base_url);
                     break;
                 } else {
-                    println!(
+                    warn!(
                         "Squid broker at {} sent invalid response to registration: `{}`",
                         &broker_base_url,
                         str::from_utf8(&msgb[0]).unwrap(),
                     );
                 }
             } else {
-                println!("Squid broker was unavailable at {}", &broker_base_url);
+                warn!("Squid broker was unavailable at {}", &broker_base_url);
             };
 
             tries += 1;
-            println!("Retrying... (Attempt {})", tries);
+            warn!("Retrying... (Attempt {})", tries);
         }
     };
 
@@ -80,7 +81,7 @@ pub fn run(threads: Option<usize>, local: bool) -> Result<()> {
     let mut node_loop = || -> Result<ControlFlow<()>> {
         if last_bk_hb_out.elapsed() > BK_HB_INTERVAL {
             if last_bk_hb_in.elapsed() > BK_TTL {
-                println!("⛓️‍💥 Lost connection to Squid broker. Reconnecting...");
+                warn!("⛓️‍💥 Lost connection to Squid broker. Reconnecting...");
                 register();
             }
             broker_sock.send("hb".as_bytes(), 0)?;
@@ -103,38 +104,53 @@ pub fn run(threads: Option<usize>, local: bool) -> Result<()> {
                 last_bk_hb_in = Instant::now();
             }
             b"spawn" => {
+                let exp_id_b = msgb[1].as_slice();
                 let exp_id = de_u64(&msgb[1])?;
                 let exp_id_hex = format!("{:x}", exp_id);
-                println!("SPAWN ID: {}", &exp_id_hex);
+                info!("Spawning container for experiment {}", &exp_id_hex);
                 let task_image = str::from_utf8(&msgb[2])?;
-                let port = str::from_utf8(&msgb[3])?;
+                let port = de_u32(&msgb[3])?.to_string();
                 // println!("TASK IMAGE: {}", &task_image);
                 // println!("TASK PORT: {}", &port);
                 // println!("TASK THREADS: {}", &num_threads_s);
                 // println!("TASK ID: {}", &exp_id_hex);
                 // println!("TASK BROKER URL: {}", &broker_base_url);
                 // TODO FINISH
-                if !local {
-                    send_status(&broker_sock, NodeStatus::Pulling)?;
+                if !local && !task_image.starts_with("docker.io/library/") {
+                    send_status(&broker_sock, exp_id_b, NodeStatus::Pulling)?;
                     if !docker::pull(task_image)?.success() {
-                        send_status(&broker_sock, NodeStatus::Crashed)?;
+                        send_status(&broker_sock, exp_id_b, NodeStatus::Crashed)?;
                         return Ok(ControlFlow::Continue(()));
                     }
                 }
-                send_status(&broker_sock, NodeStatus::Active)?;
+                send_status(&broker_sock, exp_id_b, NodeStatus::Active)?;
 
-                docker::run(
-                    task_image,
-                    &exp_id_hex,
-                    &broker_base_url,
-                    port,
-                    &num_threads_s,
-                )?;
+                if test {
+                    docker::test_run(
+                        task_image,
+                        &exp_id_hex,
+                        &broker_base_url,
+                        &port,
+                        &num_threads_s,
+                    )?;
+                } else {
+                    docker::run(
+                        task_image,
+                        &exp_id_hex,
+                        &broker_base_url,
+                        &port,
+                        &num_threads_s,
+                    )?;
+                }
+
+                if local {
+                    return Ok(ControlFlow::Break(()));
+                }
             }
             b"abort" => {
                 let exp_id = de_u64(&msgb[1])?;
                 let exp_id_hex = format!("{:x}", exp_id);
-                println!("ABORT ID: {}", &exp_id_hex);
+                info!("Aborting experiment {}", &exp_id_hex);
                 docker::kill_all(&exp_id_hex)?;
             }
             _ => (),
@@ -144,14 +160,23 @@ pub fn run(threads: Option<usize>, local: bool) -> Result<()> {
     };
 
     loop {
-        if let Err(e) = node_loop() {
-            let _ = send_status(&broker_sock, NodeStatus::Crashed);
-            eprintln!("Error: {}", &e);
+        match node_loop() {
+            Ok(ControlFlow::Continue(_)) => continue,
+            Ok(ControlFlow::Break(_)) => break,
+            Err(e) => {
+                // let _ = send_status(&broker_sock, exp, NodeStatus::Crashed);
+                error!("Error: {}", &e);
+            }
         }
     }
+
+    Ok(())
 }
 
-fn send_status(broker_sock: &zmq::Socket, status: NodeStatus) -> Result<()> {
-    broker_sock.send_multipart(["status".as_bytes(), &(status as u8).to_be_bytes()], 0)?;
+fn send_status(broker_sock: &zmq::Socket, exp_id_b: &[u8], status: NodeStatus) -> Result<()> {
+    broker_sock.send_multipart(
+        ["status".as_bytes(), exp_id_b, &(status as u8).to_be_bytes()],
+        0,
+    )?;
     Ok(())
 }

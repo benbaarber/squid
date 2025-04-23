@@ -73,7 +73,7 @@ First, if you haven't already, [install Rust](https://www.rust-lang.org/tools/in
 
 Then, install the CLI by running
 ```sh
-cargo install --git ssh://git@gitlab.com/VivumComputing/scientific/robotics/dnfs/evolution/squid.git squid
+cargo install --git ssh://git@gitlab.com/VivumComputing/scientific/tools/squid.git squid
 ```
 
 If that fails, ensure you have an SSH key registered with GitLab and that it is loaded into your ssh-agent.

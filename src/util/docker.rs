@@ -1,7 +1,10 @@
+use core::str;
 use std::{
     io,
     process::{Child, Command, ExitStatus, Stdio},
 };
+
+use tracing::debug;
 
 pub fn is_installed() -> io::Result<bool> {
     let result = Command::new("which")
@@ -39,6 +42,7 @@ pub fn run(
     let url_env = "SQUID_URL=".to_string() + broker_base_url;
     let port_env = "SQUID_PORT=".to_string() + port;
     let num_threads_env = "SQUID_NUM_THREADS=".to_string() + num_threads;
+
     Command::new("docker")
         .args([
             "run",
@@ -56,7 +60,54 @@ pub fn run(
             &num_threads_env,
             image,
         ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
+}
+
+pub fn test_run(
+    image: &str,
+    id_hex: &str,
+    broker_base_url: &str,
+    port: &str,
+    num_threads: &str,
+) -> io::Result<()> {
+    let label = "squid_id=".to_string() + id_hex;
+    let id_hex_env = "SQUID_EXP_ID=".to_string() + id_hex;
+    let url_env = "SQUID_URL=".to_string() + broker_base_url;
+    let port_env = "SQUID_PORT=".to_string() + port;
+    let num_threads_env = "SQUID_NUM_THREADS=".to_string() + num_threads;
+
+    // debug!("Before docker command in test");
+    // debug!("Running `docker {}`", args.join(" "));
+    let output = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "-l",
+            &label,
+            "-e",
+            &id_hex_env,
+            "-e",
+            &url_env,
+            "-e",
+            &port_env,
+            "-e",
+            &num_threads_env,
+            image,
+        ])
+        .output()?;
+    // debug!("After docker command in test");
+    debug!(
+        "Worker stdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    debug!(
+        "Worker stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    Ok(())
 }
 
 pub fn kill_all(id: &str) -> io::Result<()> {

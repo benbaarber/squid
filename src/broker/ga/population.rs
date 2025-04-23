@@ -4,7 +4,7 @@ use rand::seq::IndexedRandom;
 
 use super::{agent::Agent, genome::Species};
 
-pub trait GenericPopulation {
+pub trait GenericPopulation: Send {
     fn evaluate(&self) -> PopEvaluation;
     fn evolve(&mut self);
     fn pack_agent(&self, ix: usize) -> Result<Vec<u8>>;

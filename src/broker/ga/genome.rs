@@ -1,13 +1,13 @@
 use rand::Rng;
-use rand_distr::{Bernoulli, Distribution, Normal, StandardNormal, Uniform};
+use rand_distr::{Bernoulli, Distribution, StandardNormal, Uniform};
 use serde::{Deserialize, Serialize};
 
-pub trait Species: Clone + Serialize {
+pub trait Species: Clone + Send + Serialize {
     type Genome: Genome<Species = Self>;
     fn random_genome(&self) -> Self::Genome;
 }
 
-pub trait Genome: Clone + Serialize {
+pub trait Genome: Clone + Send + Serialize {
     type Species: Species<Genome = Self>;
     fn mutate(&mut self, species: &Self::Species, chance: f64, magnitude: f64);
 }
@@ -71,13 +71,8 @@ impl Species for CTRNNSpecies {
     fn random_genome(&self) -> CTRNNGenome {
         let size = self.input_size + self.hidden_size + self.output_size;
         let mut rng = rand::rng();
-        let normal = Normal::new(1.0, 0.333).unwrap();
         let tau_distr = Uniform::new(1e-5, 16.0).unwrap();
         let weight_distr = Uniform::new(-16.0, 16.0).unwrap();
-
-        let (min_tau, max_tau) = self.tau_bounds;
-        let (min_weight, max_weight) = self.weight_bounds;
-        let (min_bias, max_bias) = self.bias_bounds;
 
         CTRNNGenome {
             taus: (0..size)

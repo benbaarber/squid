@@ -1,10 +1,10 @@
-pub mod logger;
-pub mod tui;
+mod tui;
 
 use core::str;
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
+    io::{BufRead, BufReader},
     ops::ControlFlow,
     path::Path,
     thread,
@@ -12,14 +12,14 @@ use std::{
 
 use crate::{
     bail_assert,
-    util::{Blueprint, PopEvaluation, de_usize, docker, env},
+    util::{Blueprint, PopEvaluation, de_u32, de_usize, docker, env},
 };
 use anyhow::{Context, Result, bail};
 use chrono::Local;
-use log::{error, info};
 use serde_json::Value;
+use tracing::{error, info};
 
-pub fn run(path: &Path) -> Result<()> {
+pub fn run(path: &Path, test: bool, tui: bool) -> Result<bool> {
     bail_assert!(docker::is_installed()?, "Docker must be installed");
 
     let bpath = path.join("squid.toml");
@@ -35,36 +35,45 @@ pub fn run(path: &Path) -> Result<()> {
     );
 
     let ctx = zmq::Context::new();
-    let logs = logger::init();
-    let broker_url = env("SQUID_BROKER_URL")? + ":5555";
+    let broker_base_url = env("SQUID_BROKER_URL")?;
+    let broker_url = format!("{}:5555", &broker_base_url);
 
     // Ping broker
 
     if let Err(e) = ping_broker(&ctx, &broker_url) {
-        eprintln!("{}", e.to_string());
-        return Ok(());
+        error!("{}", e.to_string());
+        return Ok(false);
     }
 
     // Read blueprint
 
     let blueprint_s = fs::read_to_string(&bpath)
         .with_context(|| format!("Failed to open blueprint file `{}`", bpath.display()))?;
-    let blueprint: Blueprint = toml::from_str(&blueprint_s)
+    let mut blueprint: Blueprint = toml::from_str(&blueprint_s)
         .with_context(|| format!("Failed to parse blueprint file `{}`", bpath.display()))?;
-    let blueprint_b = fs::read(&bpath).expect("Blueprint file already validated");
     info!("🔧 Read blueprint from `{}`", bpath.display());
     blueprint.validate()?;
+    if test {
+        blueprint.ga.num_generations = 1;
+        blueprint.ga.population_size = 1;
+        blueprint.ga.save_percent = 1.0;
+    }
+    let blueprint_s = toml::to_string(&blueprint)?;
 
     // Build and push docker image
 
+    info!("🐋 Building docker image...");
     let task_image = blueprint.experiment.task_image.as_str();
     if !docker::build(task_image, path.to_str().unwrap())?.success() {
         // failure message
         bail!("Failed to build docker image");
     }
-    if !task_image.starts_with("docker.io/library/") && !docker::push(&task_image)?.success() {
-        // failure message
-        bail!("Failed to push docker image to {}", task_image);
+    if !task_image.starts_with("docker.io/library/") {
+        info!("🐋 Pushing docker image...");
+        if !docker::push(&task_image)?.success() {
+            // failure message
+            bail!("Failed to push docker image to {}", task_image);
+        }
     }
 
     // Create outdir
@@ -84,7 +93,7 @@ pub fn run(path: &Path) -> Result<()> {
 
     let data_dir = out_dir.join("data");
     fs::create_dir(&data_dir)?;
-    fs::write(data_dir.join("fitness_scores.csv"), "avg,best\n")?;
+    fs::write(data_dir.join("fitness.csv"), "avg,best\n")?;
 
     if let Some(ref csv_data) = blueprint.csv_data {
         for (name, headers) in csv_data {
@@ -114,38 +123,58 @@ pub fn run(path: &Path) -> Result<()> {
         }
     };
 
-    // Start TUI
-
-    let id: u64 = rand::random();
-    let mut app = tui::App::new(&blueprint, id, logs).context("TUI failed to start")?;
-
     // Start experiment in thread
 
-    let bthread_sock = ctx.socket(zmq::PAIR)?;
-    bthread_sock.bind("inproc://broker_loop")?;
-    let bthread = thread::spawn(move || -> Result<()> {
+    let id: u64 = rand::random();
+    let out_dir_clone = out_dir.clone();
+
+    let ex_sock = ctx.socket(zmq::PAIR)?;
+    ex_sock.bind("inproc://experiment")?;
+    let exp_thread = thread::spawn(move || -> Result<()> {
         let id_b = id.to_be_bytes();
-        let tui_sock = ctx.socket(zmq::PAIR)?;
-        tui_sock.connect("inproc://broker_loop")?;
+        let ui_sock = ctx.socket(zmq::PAIR)?;
+        ui_sock.connect("inproc://experiment")?;
         let broker_sock = ctx.socket(zmq::DEALER)?;
         broker_sock.set_identity(&id_b)?;
         broker_sock.connect(&broker_url)?;
 
         info!("🧪 Starting experiment {:x}", id);
+        let blueprint_b = blueprint_s.as_bytes();
         broker_sock.send_multipart(["run".as_bytes(), &id_b, &blueprint_b, &seeds_b], 0)?;
+
+        if broker_sock.poll(zmq::POLLIN, 5000)? > 0 {
+            let msgb = broker_sock.recv_multipart(0)?;
+            if msgb[0] == b"redirect" {
+                let port = de_u32(&msgb[1])?;
+                let exp_url = format!("{}:{}", &broker_base_url, port);
+                broker_sock.disconnect(&broker_url)?;
+                broker_sock.connect(&exp_url)?;
+                info!("🔗 Experiment DEALER socket connected to {}", &exp_url);
+
+                broker_sock.send_multipart(["run".as_bytes(), &id_b], 0)?;
+            } else {
+                ui_sock.send("crashed", 0)?;
+                bail!(
+                    "Broker did not respond with redirect, sent {}",
+                    str::from_utf8(&msgb[0])?
+                );
+            }
+        } else {
+            ui_sock.send("crashed", 0)?;
+            bail!("Timed out waiting for broker to send redirect port.");
+        }
 
         let mut sockets = [
             broker_sock.as_poll_item(zmq::POLLIN),
-            tui_sock.as_poll_item(zmq::POLLIN),
+            ui_sock.as_poll_item(zmq::POLLIN),
         ];
         loop {
-            match broker_loop(&mut sockets, &broker_sock, &tui_sock, &id_b, &out_dir) {
+            match exp_loop(&mut sockets, &broker_sock, &ui_sock, &id_b, &out_dir_clone) {
                 Ok(ControlFlow::Break(_)) => break,
                 Ok(ControlFlow::Continue(_)) => continue,
                 Err(e) => {
-                    error!("Broker loop error: {:#}", e);
-                    tui_sock.send("crashed", 0)?;
-                    break;
+                    ui_sock.send("crashed", 0)?;
+                    bail!("Exp loop error: {:#}", e);
                 }
             }
         }
@@ -153,33 +182,81 @@ pub fn run(path: &Path) -> Result<()> {
         Ok(())
     });
 
-    app.run(&bthread_sock, &bthread)?;
+    if tui {
+        let mut app = tui::App::new(&blueprint, id).context("TUI failed to start")?;
+        app.run(ex_sock)?;
+    }
 
-    bthread.join().unwrap()?;
-    info!("🧪 Experiment done");
+    let mut success = match exp_thread.join().unwrap() {
+        Ok(()) => {
+            info!("🧪 Experiment done");
+            true
+        }
+        Err(e) => {
+            error!("{}", e.to_string());
+            false
+        }
+    };
 
-    Ok(())
+    if test {
+        println!("Validating csv data...");
+
+        let data_dir = out_dir.join("data");
+
+        for csv in fs::read_dir(data_dir)? {
+            let path = csv?.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("csv") {
+                continue;
+            }
+            let file_name = path.file_name().unwrap();
+            let file = fs::File::open(&path)?;
+            let reader = BufReader::new(file);
+            let mut lines = reader
+                .lines()
+                .map(|l| l.unwrap().chars().filter(|c| *c == ',').count()); // not counting gen column
+
+            let num_headers = lines.next().unwrap();
+            let Some(num_fields) = lines.next() else {
+                println!("  ✘ {:?} is empty", &file_name);
+                success = false;
+                continue;
+            };
+
+            if num_fields != num_headers {
+                println!(
+                    "  ✘ {:?} is malformed: had {} headers but {} fields",
+                    &file_name, num_headers, num_fields
+                );
+                success = false;
+                continue;
+            }
+
+            println!("  ✔ {:?}", &file_name);
+        }
+    }
+
+    Ok(success)
 }
 
-fn broker_loop(
+fn exp_loop(
     sockets: &mut [zmq::PollItem; 2],
-    broker_sock: &zmq::Socket,
-    tui_sock: &zmq::Socket,
+    ex_dealer: &zmq::Socket,
+    ui_dealer: &zmq::Socket,
     id_b: &[u8],
     out_dir: &Path,
 ) -> Result<ControlFlow<()>> {
     zmq::poll(sockets, -1)?;
 
     if sockets[0].is_readable() {
-        let msgb = broker_sock.recv_multipart(0)?;
+        let msgb = ex_dealer.recv_multipart(0)?;
         let cmd = msgb[0].as_slice();
         match cmd {
             b"prog" => {
-                tui_sock.send_multipart(&msgb[2..], 0)?;
+                ui_dealer.send_multipart(&msgb[2..], 0)?;
 
                 if msgb[2] == b"gen" && msgb[4] == b"done" {
                     let evaluation: PopEvaluation = serde_json::from_slice(&msgb[5])?;
-                    let path = out_dir.join("data/fitness_scores.csv");
+                    let path = out_dir.join("data/fitness.csv");
                     let file = OpenOptions::new().append(true).open(path)?;
                     let mut wtr = csv::Writer::from_writer(file);
                     wtr.write_record([
@@ -204,45 +281,50 @@ fn broker_loop(
                     b"data" => {
                         let data_dir = out_dir.join("data");
                         let gen_num = de_usize(&msgb[3])?;
-                        let data: HashMap<String, Vec<Vec<Option<f64>>>> =
+                        let data: Option<HashMap<String, Vec<Vec<Option<f64>>>>> =
                             serde_json::from_slice(&msgb[4])
                                 .context("serde_json failed to parse additional sim data")?;
-                        for (name, rows) in data {
-                            let path = data_dir.join(&name).with_extension("csv");
-                            let file = OpenOptions::new().append(true).open(path)?;
-                            let mut wtr = csv::Writer::from_writer(file);
-                            for row in rows {
-                                wtr.write_field(gen_num.to_string())?;
-                                wtr.write_record(row.iter().map(|x| match x {
-                                    Some(n) => n.to_string(),
-                                    None => String::new(),
-                                }))?;
+                        if let Some(data) = data {
+                            for (name, rows) in data {
+                                let path = data_dir.join(&name).with_extension("csv");
+                                let file = OpenOptions::new().append(true).open(path)?;
+                                let mut wtr = csv::Writer::from_writer(file);
+                                for row in rows {
+                                    wtr.write_field(gen_num.to_string())?;
+                                    wtr.write_record(row.iter().map(|x| match x {
+                                        Some(n) => n.to_string(),
+                                        None => String::new(),
+                                    }))?;
+                                }
+                                wtr.flush()?;
                             }
-                            wtr.flush()?;
                         }
                     }
                     _ => (),
                 }
             }
             b"done" => {
-                tui_sock.send("done", 0)?;
+                ui_dealer.send("done", 0)?;
                 return Ok(ControlFlow::Break(()));
             }
             b"error" => {
-                let msg = str::from_utf8(&msgb[1])?;
-                error!("Broker error: {}", msg);
-                tui_sock.send("crashed", 0)?;
-                return Ok(ControlFlow::Break(()));
-                // TODO: determine if fatal and recover?
+                let fatal = msgb[1][0] != 0;
+                let msg = str::from_utf8(&msgb[2])?;
+                if fatal {
+                    bail!("[FATAL] From experiment thread: {}", msg);
+                } else {
+                    error!("From experiment thread: {}", msg);
+                }
             }
             _ => (),
         }
     }
 
     if sockets[1].is_readable() {
-        let msg = tui_sock.recv_bytes(0)?;
+        let msg = ui_dealer.recv_bytes(0)?;
         if msg == b"abort" {
-            broker_sock.send_multipart([b"abort", id_b], 0)?;
+            ex_dealer.send_multipart([b"abort", id_b], 0)?;
+            return Ok(ControlFlow::Break(()));
         }
     }
 
@@ -258,7 +340,7 @@ fn ping_broker(ctx: &zmq::Context, broker_url: &str) -> Result<()> {
         let msgb = temp_sock.recv_multipart(0)?;
         let status = msgb[1].as_slice();
         match status {
-            b"idle" => info!("🔗 Connected to Squid broker at {}", broker_url),
+            b"idle" => info!("🦑 Connected to Squid broker at {}", broker_url),
             b"busy" => bail!(
                 "Squid broker is busy with another experiment at {}",
                 broker_url

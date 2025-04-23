@@ -2,24 +2,15 @@ use core::str;
 use std::{
     io::{self},
     ops::ControlFlow,
-    sync::{Arc, Mutex},
-    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
 use crate::util::{Blueprint, NodeStatus, PopEvaluation, de_u8, de_u64, de_usize};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use log::{Level, error, info, warn};
-use ratatui::{
-    layout::Flex,
-    prelude::*,
-    style::{Styled, Stylize},
-    text::ToSpan,
-    widgets::*,
-};
-
-use super::logger::{self, TUILog};
+use ratatui::{layout::Flex, prelude::*, style::Stylize, text::ToSpan, widgets::*};
+use tracing::{error, info, warn};
+use tui_logger::TuiLoggerWidget;
 
 #[derive(PartialEq, Eq)]
 pub enum AppState {
@@ -44,18 +35,11 @@ pub struct App {
     max_fitness: f64,
     // client state
     state: AppState,
-    show_help: bool,
     show_abort: bool,
-    // logs
-    logs: Arc<Mutex<Vec<TUILog>>>,
 }
 
 impl App {
-    pub fn new(
-        blueprint: &Blueprint,
-        experiment_id: u64,
-        logs: Arc<Mutex<Vec<TUILog>>>,
-    ) -> io::Result<Self> {
+    pub fn new(blueprint: &Blueprint, experiment_id: u64) -> io::Result<Self> {
         let population_size = blueprint.ga.population_size;
 
         Ok(Self {
@@ -70,17 +54,15 @@ impl App {
             best_fitnesses: Vec::with_capacity(population_size),
             max_fitness: 0.0,
             state: AppState::Active,
-            show_help: false,
             show_abort: false,
-            logs,
         })
     }
 
-    pub fn run<T>(&mut self, bthread_sock: &zmq::Socket, bthread: &JoinHandle<T>) -> Result<()> {
+    pub fn run(&mut self, ex_sock: zmq::Socket) -> Result<()> {
         let mut terminal = ratatui::init();
 
         loop {
-            match self.tui_loop(&mut terminal, &bthread_sock) {
+            match self.tui_loop(&mut terminal, &ex_sock) {
                 Ok(ControlFlow::Break(_)) => break,
                 Ok(ControlFlow::Continue(_)) => (),
                 Err(e) => {
@@ -92,14 +74,13 @@ impl App {
         }
 
         ratatui::restore();
-        logger::flush(Arc::clone(&self.logs))?;
         Ok(())
     }
 
     fn tui_loop(
         &mut self,
         terminal: &mut ratatui::DefaultTerminal,
-        bthread_sock: &zmq::Socket,
+        ex_sock: &zmq::Socket,
     ) -> Result<ControlFlow<()>> {
         if event::poll(Duration::from_millis(100))? {
             let event = event::read()?;
@@ -107,7 +88,7 @@ impl App {
                 Some(KeyCode::Char('q')) => match self.state {
                     AppState::Active => {
                         if self.show_abort {
-                            bthread_sock.send("abort", 0)?;
+                            ex_sock.send("abort", 0)?;
                             self.end_duration = Some(self.start_time.elapsed());
                             self.state = AppState::Aborted;
                         }
@@ -130,7 +111,7 @@ impl App {
         }
 
         if self.state == AppState::Active {
-            while let Ok(msgb) = bthread_sock.recv_multipart(zmq::DONTWAIT) {
+            while let Ok(msgb) = ex_sock.recv_multipart(zmq::DONTWAIT) {
                 let prog_type = msgb[0].as_slice();
                 match prog_type {
                     b"gen" => {
@@ -275,19 +256,12 @@ impl WidgetRef for App {
             .block(section_block("Info"))
             .render(info_area, buf);
 
-        // Logs
-        let logs = self.logs.lock().unwrap();
-        let lines = logs
-            .iter()
-            .rev()
-            .take(20)
-            .rev()
-            .map(log_line)
-            .collect::<Vec<_>>();
-
-        Paragraph::new(lines)
+        TuiLoggerWidget::default()
+            .output_timestamp(None)
+            .output_file(false)
+            .output_target(false)
+            .output_line(false)
             .block(section_block("Logs"))
-            .wrap(Wrap { trim: true })
             .render(logs_area, buf);
 
         // Chart
@@ -306,7 +280,7 @@ impl WidgetRef for App {
                 .data(&self.best_fitnesses),
         ];
 
-        let chart = Chart::new(datasets)
+        Chart::new(datasets)
             .block(section_block("Performance"))
             .x_axis(
                 Axis::default()
@@ -391,9 +365,9 @@ fn info_line(key: &'static str, value: String) -> Line<'static> {
     Line::from(vec![Span::from(key).bold().yellow(), Span::from(value)])
 }
 
-fn info_line_str<'a>(key: &'static str, value: &'a str) -> Line<'a> {
-    Line::from(vec![Span::from(key).bold().yellow(), Span::from(value)])
-}
+// fn info_line_str<'a>(key: &'static str, value: &'a str) -> Line<'a> {
+//     Line::from(vec![Span::from(key).bold().yellow(), Span::from(value)])
+// }
 
 fn format_duration(duration: Duration) -> String {
     let seconds = duration.as_secs();
@@ -404,12 +378,12 @@ fn format_duration(duration: Duration) -> String {
     format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
 }
 
-fn log_line(log: &TUILog) -> Line {
-    let color = match log.level {
-        Level::Error => Color::LightRed,
-        Level::Warn => Color::LightYellow,
-        _ => Color::White,
-    };
+// fn log_line(log: &TUILog) -> Line {
+//     let color = match log.level {
+//         Level::Error => Color::LightRed,
+//         Level::Warn => Color::LightYellow,
+//         _ => Color::White,
+//     };
 
-    log.content.clone().set_style(color).into()
-}
+//     log.content.clone().set_style(color).into()
+// }

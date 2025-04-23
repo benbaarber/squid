@@ -4,8 +4,7 @@
 
 - ping
 - status
-- run (id: `u64`) (blueprint: `Blueprint`) (seeds: `Vec<Species>`) [NOTE: must use custom u64 identity]
-- abort (id: `u64`)
+- run (id: `u64`) (blueprint: `Blueprint`) (seeds: `Vec<Species>`)
 
 ### Broker -> Client
 
@@ -13,6 +12,16 @@
 - status
   - idle
   - busy
+- redirect (port: `u32`)
+- error (message: `str`)
+
+### Client -> Experiment Thread
+
+- run (id: `u64`)
+- abort (id: `u64`)
+
+### Experiment Thread -> Client
+
 - prog (id: `u64`)
   - gen (num: `u32`)
     - running
@@ -26,13 +35,13 @@
   - population (agents: `Vec<json>`)
   - data (gen: `u32`) (data: `json`)
 - done (id: `u64`)
-- error (message: `str`)
+- error (fatal: `bool`) (message: `str`)
 
 ### Broker -> Node
 
 - hb
 - registered
-- spawn (id: `u64`) (task_image: `str`) (port: `str`)
+- spawn (id: `u64`) (task_image: `str`) (port: `u32`)
 - abort (id: `u64`)
 - [TODO] meta (info req)
 
@@ -40,7 +49,7 @@
 
 - hb
 - register (num_workers: `u32`)
-- status (status: `NodeStatus`)
+- status (id: `u64`) (status: `NodeStatus`)
 - [TODO] meta (info res)
 
 ### Supervisor -> Experiment Thread
@@ -48,6 +57,7 @@
 - (id: `u64`) register (wk_ids: `json [int]`)
 - (id: `u64`) ok
 - (id: `u64`) dead (dead_wk_ids: `json [int]`)
+- (id: `u64`) error (msg: `str`)
 
 ### Experiment Thread -> Supervisor
 
@@ -69,6 +79,15 @@
 - data (gen: `u32`) (ix: `u32`)
 - kill
 
+### Broker -> Experiment Thread
+
+- ndstatus (node_id: `u64`) (status: `u8`)
+
+### Experiment Thread -> Broker
+
+- ndspawn (task_image: `str`) (port: `u32`)
+- ndabort
+
 ### Client Broker thread -> TUI Thread
 
 - gen (num: `u32`)
@@ -86,9 +105,8 @@
 5555 - broker (router) <- client (dealer)
 5556 - broker (router) <- node (dealer)
 
-5600-5700 reserved:
-5600 - broker experiment 1 thread (router) <- worker (dealer)
-5601 - broker experiment 1 thread (router) <- worker master (dealer)
-5602 - broker experiment 2 thread (router) <- worker (dealer)
-5603 - broker experiment 2 thread (router) <- worker master (dealer)
-...
+5600-5699 reserved
+- (5600 + (n * 3)) - thread n (dealer) <- client (dealer)
+- (5600 + (n * 3) + 1) - thread n (router) <- worker (dealer)
+- (5600 + (n * 3) + 2) - thread n (router) <- supervisor (dealer)
+for n in [0, 32]
