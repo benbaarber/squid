@@ -5,7 +5,7 @@
 #[macro_export]
 macro_rules! synthesize {
     ($species_type:ty, $genome_type:ty, $blueprint:expr, $seeds:expr) => {{
-        let species = <$species_type>::deserialize($blueprint.species.clone())?;
+        let species = <$species_type>::try_from($blueprint.nn)?;
         let agents = if $seeds.len() > 0 {
             let mut agents = Vec::with_capacity($seeds.len());
             for seed in $seeds {
@@ -19,7 +19,7 @@ macro_rules! synthesize {
             None
         };
 
-        let population = Population::new($blueprint.ga, species, agents);
+        let population = Population::new($blueprint.ga.clone(), species, agents)?;
         Box::new(population)
     }};
 }

@@ -12,7 +12,11 @@ use std::{
 
 use crate::{
     bail_assert,
-    util::{Blueprint, PopEvaluation, de_u32, de_usize, docker, env},
+    util::{
+        PopEvaluation,
+        blueprint::{Blueprint, InitMethod},
+        de_u32, de_usize, docker, env,
+    },
 };
 use anyhow::{Context, Result, bail};
 use chrono::Local;
@@ -56,14 +60,14 @@ pub fn run(path: &Path, test: bool, tui: bool) -> Result<bool> {
     if test {
         blueprint.ga.num_generations = 1;
         blueprint.ga.population_size = 1;
-        blueprint.ga.save_percent = 1.0;
+        blueprint.ga.save_fraction = 1.0;
     }
     let blueprint_s = toml::to_string(&blueprint)?;
 
     // Build and push docker image
 
     info!("🐋 Building docker image...");
-    let task_image = blueprint.experiment.task_image.as_str();
+    let task_image = blueprint.experiment.image.as_str();
     if !docker::build(task_image, path.to_str().unwrap())?.success() {
         // failure message
         bail!("Failed to build docker image");
@@ -106,21 +110,19 @@ pub fn run(path: &Path, test: bool, tui: bool) -> Result<bool> {
 
     // Check for optional seeds
 
-    let seeds_b = match blueprint.experiment.seed_dir {
-        Some(ref seed_dir) => {
-            let seed_dir = path.join(seed_dir);
-            let population_size = blueprint.ga.population_size;
-            let seeds = read_agents_from_dir(&seed_dir, population_size)?;
-            info!(
-                "🔧 Seeding population from `{}`",
-                seed_dir.canonicalize()?.display()
-            );
-            serde_json::to_vec(&seeds)?
-        }
-        None => {
-            let seeds = Vec::<Vec<u8>>::with_capacity(0);
-            serde_json::to_vec(&seeds)?
-        }
+    let seeds_b = if let InitMethod::Seeded { ref dir, .. } = blueprint.ga.init_method {
+        let seed_dir = path.join(dir);
+        let population_size = blueprint.ga.population_size;
+        let seeds = read_agents_from_dir(&seed_dir, population_size)?;
+        info!(
+            "🔧 Seeding population from `{}`",
+            seed_dir.canonicalize()?.display()
+        );
+        bail_assert!(seeds.len() > 0, "Seeds directory was empty");
+        serde_json::to_vec(&seeds)?
+    } else {
+        let seeds = Vec::<Vec<u8>>::new();
+        serde_json::to_vec(&seeds)?
     };
 
     // Start experiment in thread

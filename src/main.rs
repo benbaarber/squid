@@ -6,7 +6,7 @@ mod util;
 use core::str;
 use std::{fs, path::PathBuf, thread};
 
-use crate::util::Blueprint;
+use crate::util::blueprint::Blueprint;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing::{error_span, level_filters::LevelFilter};
@@ -65,7 +65,7 @@ enum Commands {
     /// Validate a blueprint file
     Validate {
         /// Blueprint file
-        #[arg(short, long, value_name = "FILE", default_value = "./squid.toml")]
+        #[arg(default_value = "squid.toml")]
         blueprint: PathBuf,
     },
     // /// Abort the running experiment (deprecated)
@@ -161,7 +161,6 @@ fn main() -> Result<()> {
                     println!("❌ Tests failed. See logs.")
                 }
             } else if local {
-                // TODO figure out where to init tracing subscriber, currently doing it in client::run
                 let broker_thread = thread::spawn(|| broker::run(true));
                 let node_thread = thread::spawn(move || node::run(num_threads, true, false));
                 client::run(&path, false, !no_tui)?;
@@ -198,7 +197,7 @@ fn main() -> Result<()> {
             let blueprint: Blueprint = toml::from_str(&blueprint_s)
                 .with_context(|| format!("Failed to parse blueprint file `{}`", bpath.display()))?;
             blueprint.validate()?;
-            println!("✅ Validated blueprint from `{}`", bpath.display());
+            println!("✅ Blueprint `{}` is valid", bpath.display());
         }
     }
 

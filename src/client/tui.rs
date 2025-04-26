@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::util::{Blueprint, NodeStatus, PopEvaluation, de_u8, de_u64, de_usize};
+use crate::util::{NodeStatus, PopEvaluation, blueprint::Blueprint, de_u8, de_u64, de_usize};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{layout::Flex, prelude::*, style::Stylize, text::ToSpan, widgets::*};

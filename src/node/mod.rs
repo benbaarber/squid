@@ -115,7 +115,6 @@ pub fn run(threads: Option<usize>, local: bool, test: bool) -> Result<()> {
                 // println!("TASK THREADS: {}", &num_threads_s);
                 // println!("TASK ID: {}", &exp_id_hex);
                 // println!("TASK BROKER URL: {}", &broker_base_url);
-                // TODO FINISH
                 if !local && !task_image.starts_with("docker.io/library/") {
                     send_status(&broker_sock, exp_id_b, NodeStatus::Pulling)?;
                     if !docker::pull(task_image)?.success() {

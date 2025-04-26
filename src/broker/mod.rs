@@ -3,7 +3,11 @@ mod util;
 
 use crate::{
     synthesize,
-    util::{Blueprint, NodeStatus, de_f64, de_u32, de_u64, de_usize},
+    util::{
+        NodeStatus,
+        blueprint::{Blueprint, NN},
+        de_f64, de_u32, de_u64, de_usize,
+    },
 };
 use anyhow::{Context, Result, bail};
 use core::str;
@@ -12,7 +16,6 @@ use ga::{
     genome::{CTRNNGenome, CTRNNSpecies},
     population::{GenericPopulation, Population},
 };
-use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
     ops::ControlFlow,
@@ -318,7 +321,7 @@ fn experiment(
     bk_dealer.send_multipart(
         [
             "ndspawn".as_bytes(),
-            blueprint.experiment.task_image.as_bytes(),
+            blueprint.experiment.image.as_bytes(),
             (port as u32).to_be_bytes().as_slice(),
         ],
         0,
@@ -719,9 +722,8 @@ fn wake_population(
     blueprint: &Blueprint,
     seeds: Vec<Vec<u8>>,
 ) -> Result<Box<dyn GenericPopulation>> {
-    let population = match blueprint.experiment.genus.as_str() {
-        "CTRNN" => synthesize!(CTRNNSpecies, CTRNNGenome, blueprint, seeds),
-        x => bail!("Received unsupported genus: `{}`", x),
+    let population = match blueprint.nn {
+        NN::CTRNN { .. } => synthesize!(CTRNNSpecies, CTRNNGenome, blueprint, seeds),
     };
 
     Ok(population)
