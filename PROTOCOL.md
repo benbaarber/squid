@@ -3,15 +3,11 @@
 ### Client -> Broker
 
 - ping
-- status
 - run (id: `u64`) (blueprint: `Blueprint`) (seeds: `Vec<Species>`)
 
 ### Broker -> Client
 
 - pong
-- status
-  - idle
-  - busy
 - redirect (port: `u32`)
 - error (message: `str`)
 

@@ -158,18 +158,3 @@ impl Blueprint {
         Ok(())
     }
 }
-
-impl GAConfig {
-    pub fn display(&self) -> String {
-        // TODO UPDATE THIS
-        format!(
-            "Population size: {}\nNum generations: {}\nElitism percent: {}\nRandom percent: {}\nMutation chance: {}\nMutation magnitude: {}",
-            self.population_size,
-            self.num_generations,
-            self.elitism_fraction,
-            self.random_fraction,
-            self.mutation_probability,
-            self.mutation_magnitude
-        )
-    }
-}

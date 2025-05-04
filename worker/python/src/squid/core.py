@@ -88,12 +88,12 @@ def _worker_proc(sim_fn: SimFn, wk_id: int, exp_id_b: bytes, wk_router_url: str)
 
 def _supervisor(proc_factory: WorkerFactory):
     exp_id_b = se_u64(int(get_env_or_throw("SQUID_EXP_ID"), base=16))
-    broker_url = get_env_or_throw("SQUID_URL")
+    broker_addr = get_env_or_throw("SQUID_ADDR")
     port = int(get_env_or_throw("SQUID_PORT"))
     num_procs = int(get_env_or_throw("SQUID_NUM_THREADS"))
 
-    wk_url = f"{broker_url}:{port+1}"
-    sv_url = f"{broker_url}:{port+2}"
+    wk_url = f"tcp://{broker_addr}:{port+1}"
+    sv_url = f"tcp://{broker_addr}:{port+2}"
 
     sv_id = random.getrandbits(64)
 
@@ -135,7 +135,7 @@ def _supervisor(proc_factory: WorkerFactory):
                         for wk_id in dead:
                             del workers[wk_id]
                         # TODO respawn maybe?
-                        ga_sock.send_multipart([exp_id_b, b"dead", orjson.dumps(dead)], copy=False, track=True)
+                        ga_sock.send_multipart([exp_id_b, b"dead", orjson.dumps(dead)])
                     else:
                         ga_sock.send_multipart([exp_id_b, b"ok"])
                 case b"registered":

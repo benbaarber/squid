@@ -6,10 +6,7 @@ use anyhow::{Result, bail};
 use rand::{Rng, rngs::ThreadRng, seq::IndexedRandom};
 use rand_distr::{Bernoulli, Distribution};
 
-use super::{
-    agent::Agent,
-    genome::{Genome, Species},
-};
+use super::{agent::Agent, genome::Species};
 
 pub trait GenericPopulation: Send {
     fn evaluate(&self) -> PopEvaluation;

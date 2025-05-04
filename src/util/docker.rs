@@ -33,13 +33,13 @@ pub fn pull(image: &str) -> io::Result<ExitStatus> {
 pub fn run(
     image: &str,
     id_hex: &str,
-    broker_base_url: &str,
+    broker_addr: &str,
     port: &str,
     num_threads: &str,
 ) -> io::Result<Child> {
     let label = "squid_id=".to_string() + id_hex;
     let id_hex_env = "SQUID_EXP_ID=".to_string() + id_hex;
-    let url_env = "SQUID_URL=".to_string() + broker_base_url;
+    let addr_env = "SQUID_ADDR=".to_string() + broker_addr;
     let port_env = "SQUID_PORT=".to_string() + port;
     let num_threads_env = "SQUID_NUM_THREADS=".to_string() + num_threads;
 
@@ -53,7 +53,7 @@ pub fn run(
             "-e",
             &id_hex_env,
             "-e",
-            &url_env,
+            &addr_env,
             "-e",
             &port_env,
             "-e",
@@ -68,18 +68,16 @@ pub fn run(
 pub fn test_run(
     image: &str,
     id_hex: &str,
-    broker_base_url: &str,
+    broker_addr: &str,
     port: &str,
     num_threads: &str,
 ) -> io::Result<()> {
     let label = "squid_id=".to_string() + id_hex;
     let id_hex_env = "SQUID_EXP_ID=".to_string() + id_hex;
-    let url_env = "SQUID_URL=".to_string() + broker_base_url;
+    let addr_env = "SQUID_ADDR=".to_string() + broker_addr;
     let port_env = "SQUID_PORT=".to_string() + port;
     let num_threads_env = "SQUID_NUM_THREADS=".to_string() + num_threads;
 
-    // debug!("Before docker command in test");
-    // debug!("Running `docker {}`", args.join(" "));
     let output = Command::new("docker")
         .args([
             "run",
@@ -89,7 +87,7 @@ pub fn test_run(
             "-e",
             &id_hex_env,
             "-e",
-            &url_env,
+            &addr_env,
             "-e",
             &port_env,
             "-e",
@@ -97,7 +95,7 @@ pub fn test_run(
             image,
         ])
         .output()?;
-    // debug!("After docker command in test");
+
     debug!(
         "Worker stdout:\n{}",
         String::from_utf8_lossy(&output.stdout)

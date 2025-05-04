@@ -126,10 +126,6 @@ pub fn run(once: bool) -> Result<()> {
             let cmd = msgb[1].as_slice();
             match cmd {
                 b"ping" => cl_router.send_multipart([exp_id_b, b"pong"], 0)?,
-                b"status" => {
-                    // TODO fix this
-                    cl_router.send_multipart([exp_id_b, b"status", b"idle"], 0)?;
-                }
                 b"run" => {
                     if exp_id_b.len() != 8 {
                         cl_router.send_multipart([

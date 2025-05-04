@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing::{error_span, level_filters::LevelFilter};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use util::stdout_buffer::StdoutBuffer;
+use util::{env, stdout_buffer::StdoutBuffer};
 
 #[derive(Parser)]
 #[clap(version)]
@@ -34,6 +34,9 @@ enum Commands {
         /// Path to squid project directory
         #[arg(default_value = ".")]
         path: PathBuf,
+        /// Broker address (e.g. 192.168.0.42)
+        #[arg(short, long)]
+        broker_addr: Option<String>,
         /// Run in local mode - spawns a squid broker and node locally and runs the experiment on your device
         #[arg(short, long)]
         local: bool,
@@ -55,6 +58,9 @@ enum Commands {
     },
     /// Run the squid node
     Node {
+        /// Broker address (e.g. 192.168.0.42)
+        #[arg(short, long)]
+        broker_addr: Option<String>,
         /// Number of worker threads to spawn, defaults to use all available cores
         #[arg(short, long)]
         num_threads: Option<usize>,
@@ -68,12 +74,6 @@ enum Commands {
         #[arg(default_value = "squid.toml")]
         blueprint: PathBuf,
     },
-    // /// Abort the running experiment (deprecated)
-    // Abort,
-    // {
-    //     /// Experiment id, printed after calling `squid run`
-    //     // id: String,
-    // },
 }
 
 fn main() -> Result<()> {
@@ -85,10 +85,6 @@ fn main() -> Result<()> {
             fs::write(
                 path.join("squid.toml"),
                 include_bytes!("../templates/squid.toml"),
-            )?;
-            fs::write(
-                path.join(".env"),
-                include_bytes!("../templates/template.env"),
             )?;
             fs::write(
                 path.join("Dockerfile"),
@@ -113,21 +109,25 @@ fn main() -> Result<()> {
         }
         Commands::Run {
             path,
+            broker_addr,
             local,
             num_threads,
             test,
             no_tui,
         } => {
+            // Setup logging
             let mut stdout_buffer = None;
-            if test || no_tui {
-                let level = if test {
-                    LevelFilter::DEBUG
-                } else {
-                    LevelFilter::INFO
-                };
+            let filter = tracing_subscriber::filter::Targets::new()
+                .with_target("squid::client", LevelFilter::INFO);
+            if test {
                 tracing_subscriber::fmt()
-                    .with_max_level(level)
+                    .with_max_level(LevelFilter::DEBUG)
                     .with_target(false)
+                    .init();
+            } else if no_tui {
+                tracing_subscriber::registry()
+                    .with(tracing_subscriber::fmt::layer().with_target(false))
+                    .with(filter)
                     .init();
             } else {
                 stdout_buffer = Some(StdoutBuffer::new());
@@ -138,17 +138,29 @@ fn main() -> Result<()> {
                             .with_writer(stdout_buffer.clone().unwrap()),
                     )
                     .with(tui_logger::TuiTracingSubscriberLayer)
+                    .with(filter)
                     .init();
                 tui_logger::init_logger(tui_logger::LevelFilter::Info).unwrap();
             }
 
+            let broker_addr = if test || local {
+                "localhost".to_string()
+            } else {
+                match broker_addr {
+                    Some(x) => x,
+                    None => env("SQUID_BROKER_ADDR").map_err(|_| anyhow::Error::msg("Broker address not set. Use cli argument `-b`/`--broker-addr` or set $SQUID_BROKER_ADDR env variable."))?
+                }
+            };
+
             if test {
                 let broker_thread =
                     thread::spawn(|| error_span!("broker").in_scope(|| broker::run(true)));
+                let broker_url_clone = broker_addr.clone();
                 let node_thread = thread::spawn(|| {
-                    error_span!("node").in_scope(|| node::run(Some(1), true, true))
+                    error_span!("node")
+                        .in_scope(|| node::run(broker_url_clone, Some(1), true, true))
                 });
-                let success = match client::run(&path, true, false) {
+                let success = match client::run(&path, broker_addr, true, false) {
                     Ok(s) => s,
                     Err(e) => return Err(e),
                 };
@@ -162,12 +174,14 @@ fn main() -> Result<()> {
                 }
             } else if local {
                 let broker_thread = thread::spawn(|| broker::run(true));
-                let node_thread = thread::spawn(move || node::run(num_threads, true, false));
-                client::run(&path, false, !no_tui)?;
+                let broker_url_clone = broker_addr.clone();
+                let node_thread =
+                    thread::spawn(move || node::run(broker_url_clone, num_threads, true, false));
+                client::run(&path, broker_addr, false, !no_tui)?;
                 broker_thread.join().unwrap()?;
                 node_thread.join().unwrap()?;
             } else {
-                client::run(&path, false, !no_tui)?;
+                client::run(&path, broker_addr, false, !no_tui)?;
             }
 
             if let Some(buf) = stdout_buffer {
@@ -178,19 +192,22 @@ fn main() -> Result<()> {
             tracing_subscriber::fmt().with_target(false).init();
             broker::run(once)?;
         }
-        Commands::Node { num_threads, local } => {
+        Commands::Node {
+            broker_addr,
+            num_threads,
+            local,
+        } => {
             tracing_subscriber::fmt().with_target(false).init();
-            node::run(num_threads, local, false)?;
+            let broker_addr = if local {
+                "localhost".to_string()
+            } else {
+                match broker_addr {
+                    Some(x) => x,
+                    None => env("SQUID_BROKER_ADDR").map_err(|_| anyhow::Error::msg("Broker address not set. Use cli argument `-b`/`--broker-addr` or set $SQUID_BROKER_ADDR env variable."))?
+                }
+            };
+            node::run(broker_addr, num_threads, local, false)?;
         }
-        // Commands::Abort => {
-        //     let ctx = zmq::Context::new();
-        //     let broker_url = env("SQUID_BROKER_URL")? + ":5555";
-        //     // Abort cmd is temporary so just blocking and assuming it will connect
-        //     let broker_sock = ctx.socket(zmq::DEALER)?;
-        //     broker_sock.connect(&broker_url)?;
-        //     broker_sock.send("abort", 0)?;
-        //     println!("abort signal sent, check other terminal");
-        // }
         Commands::Validate { blueprint: bpath } => {
             let blueprint_s = fs::read_to_string(&bpath)
                 .with_context(|| format!("Failed to open blueprint file `{}`", bpath.display()))?;

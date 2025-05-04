@@ -15,7 +15,7 @@ use crate::{
     util::{
         PopEvaluation,
         blueprint::{Blueprint, InitMethod},
-        de_u32, de_usize, docker, env,
+        de_u32, de_usize, docker,
     },
 };
 use anyhow::{Context, Result, bail};
@@ -23,7 +23,7 @@ use chrono::Local;
 use serde_json::Value;
 use tracing::{error, info};
 
-pub fn run(path: &Path, test: bool, tui: bool) -> Result<bool> {
+pub fn run(path: &Path, broker_addr: String, test: bool, tui: bool) -> Result<bool> {
     bail_assert!(docker::is_installed()?, "Docker must be installed");
 
     let bpath = path.join("squid.toml");
@@ -39,8 +39,7 @@ pub fn run(path: &Path, test: bool, tui: bool) -> Result<bool> {
     );
 
     let ctx = zmq::Context::new();
-    let broker_base_url = env("SQUID_BROKER_URL")?;
-    let broker_url = format!("{}:5555", &broker_base_url);
+    let broker_url = format!("tcp://{}:5555", &broker_addr);
 
     // Ping broker
 
@@ -92,7 +91,7 @@ pub fn run(path: &Path, test: bool, tui: bool) -> Result<bool> {
     fs::create_dir(out_dir.join("agents"))?;
     fs::write(
         out_dir.join("population_parameters.txt"),
-        blueprint.ga.display(),
+        format!("{:#?}", &blueprint.ga),
     )?;
 
     let data_dir = out_dir.join("data");
@@ -148,7 +147,7 @@ pub fn run(path: &Path, test: bool, tui: bool) -> Result<bool> {
             let msgb = broker_sock.recv_multipart(0)?;
             if msgb[0] == b"redirect" {
                 let port = de_u32(&msgb[1])?;
-                let exp_url = format!("{}:{}", &broker_base_url, port);
+                let exp_url = format!("tcp://{}:{}", &broker_addr, port);
                 broker_sock.disconnect(&broker_url)?;
                 broker_sock.connect(&exp_url)?;
                 info!("🔗 Experiment DEALER socket connected to {}", &exp_url);
@@ -337,21 +336,16 @@ fn ping_broker(ctx: &zmq::Context, broker_url: &str) -> Result<()> {
     let temp_sock = ctx.socket(zmq::DEALER)?;
     temp_sock.set_linger(0)?;
     temp_sock.connect(broker_url)?;
-    temp_sock.send("status", 0)?;
+    temp_sock.send("ping", 0)?;
     if temp_sock.poll(zmq::POLLIN, 5000)? > 0 {
-        let msgb = temp_sock.recv_multipart(0)?;
-        let status = msgb[1].as_slice();
-        match status {
-            b"idle" => info!("🦑 Connected to Squid broker at {}", broker_url),
-            b"busy" => bail!(
-                "Squid broker is busy with another experiment at {}",
-                broker_url
-            ),
-            x => bail!(
-                "Squid broker sent invalid status ({}) from {}",
-                str::from_utf8(x)?,
-                broker_url
-            ),
+        let msgb = temp_sock.recv_bytes(0)?;
+        if msgb == b"pong" {
+            info!("🦑 Connected to Squid broker at {}", broker_url);
+        } else {
+            bail!(
+                "Squid broker responded to ping with {}",
+                str::from_utf8(&msgb)?
+            );
         }
     } else {
         bail!("Squid broker was unresponsive at {}", broker_url);
