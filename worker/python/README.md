@@ -14,7 +14,7 @@ The loop terminates when there are no more agents to simulate.
 ## Installation
 
 ```sh
-pip install "git+ssh://git@gitlab.com/VivumComputing/tools/squid.git#egg=squid&subdirectory=worker/python"
+pip install 'git+ssh://git@gitlab.com/VivumComputing/scientific/tools/squid.git#egg=squid&subdirectory=worker/python'
 ```
 
 ## Usage
