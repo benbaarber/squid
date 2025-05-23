@@ -25,7 +25,7 @@ pub enum NN {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum SelectionMethod {
-    // TODO Softmax,
+    Softmax,
     Tournament { size: u32 },
     Roulette,
 }

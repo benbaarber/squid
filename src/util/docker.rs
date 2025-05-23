@@ -1,10 +1,9 @@
+#![allow(unused)]
 use core::str;
 use std::{
     io,
     process::{Child, Command, ExitStatus, Stdio},
 };
-
-use tracing::debug;
 
 pub fn is_installed() -> io::Result<bool> {
     let result = Command::new("which")
@@ -32,32 +31,27 @@ pub fn pull(image: &str) -> io::Result<ExitStatus> {
 
 pub fn run(
     image: &str,
-    id_hex: &str,
-    broker_addr: &str,
-    port: &str,
-    num_threads: &str,
+    exp_label: &str,
+    exp_id_env: &str,
+    addr_env: &str,
+    port_env: &str,
+    num_threads_env: &str,
 ) -> io::Result<Child> {
-    let label = "squid_id=".to_string() + id_hex;
-    let id_hex_env = "SQUID_EXP_ID=".to_string() + id_hex;
-    let addr_env = "SQUID_ADDR=".to_string() + broker_addr;
-    let port_env = "SQUID_PORT=".to_string() + port;
-    let num_threads_env = "SQUID_NUM_THREADS=".to_string() + num_threads;
-
     Command::new("docker")
         .args([
             "run",
             "--rm",
             "-d",
             "-l",
-            &label,
+            exp_label,
             "-e",
-            &id_hex_env,
+            exp_id_env,
             "-e",
-            &addr_env,
+            addr_env,
             "-e",
-            &port_env,
+            port_env,
             "-e",
-            &num_threads_env,
+            num_threads_env,
             image,
         ])
         .stdout(Stdio::null())
@@ -67,52 +61,62 @@ pub fn run(
 
 pub fn test_run(
     image: &str,
-    id_hex: &str,
-    broker_addr: &str,
-    port: &str,
-    num_threads: &str,
+    exp_label: &str,
+    exp_id_env: &str,
+    addr_env: &str,
+    port_env: &str,
+    num_threads_env: &str,
 ) -> io::Result<()> {
-    let label = "squid_id=".to_string() + id_hex;
-    let id_hex_env = "SQUID_EXP_ID=".to_string() + id_hex;
-    let addr_env = "SQUID_ADDR=".to_string() + broker_addr;
-    let port_env = "SQUID_PORT=".to_string() + port;
-    let num_threads_env = "SQUID_NUM_THREADS=".to_string() + num_threads;
-
-    let output = Command::new("docker")
+    Command::new("docker")
         .args([
             "run",
             "--rm",
             "-l",
-            &label,
+            exp_label,
             "-e",
-            &id_hex_env,
+            exp_id_env,
             "-e",
-            &addr_env,
+            addr_env,
             "-e",
-            &port_env,
+            port_env,
             "-e",
-            &num_threads_env,
+            num_threads_env,
             image,
         ])
-        .output()?;
+        .spawn()?;
 
-    debug!(
-        "Worker stdout:\n{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    debug!(
-        "Worker stderr:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    // debug!(
+    //     "Worker stdout:\n{}",
+    //     String::from_utf8_lossy(&output.stdout)
+    // );
+    // debug!(
+    //     "Worker stderr:\n{}",
+    //     String::from_utf8_lossy(&output.stderr)
+    // );
 
     Ok(())
 }
 
-pub fn kill_all(id: &str) -> io::Result<()> {
-    let label_query = format!("label=squid_id={}", id);
-
+pub fn ps_by_exp(exp_label_query: &str) -> io::Result<Vec<String>> {
     let output = Command::new("docker")
-        .args(["ps", "-q", "-f", &label_query])
+        .args([
+            "ps",
+            "-f",
+            exp_label_query,
+            "--format",
+            "{{.Label \"squid_worker_id\"}}",
+        ])
+        .output()?;
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .split("\n")
+        .map(|s| s.to_owned())
+        .collect::<Vec<_>>())
+}
+
+pub fn kill_by_exp(exp_label_query: &str) -> io::Result<()> {
+    let output = Command::new("docker")
+        .args(["ps", "-q", "-f", exp_label_query])
         .output()?;
     let container_ids = String::from_utf8_lossy(&output.stdout);
 
@@ -120,6 +124,8 @@ pub fn kill_all(id: &str) -> io::Result<()> {
         Command::new("docker")
             .arg("kill")
             .args(container_ids.split_whitespace())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()?
             .wait()?;
     }

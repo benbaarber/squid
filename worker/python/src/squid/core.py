@@ -1,8 +1,6 @@
 import math
 from multiprocessing import Process
-import os
 import random
-import sys
 
 import orjson
 import zmq
@@ -15,13 +13,14 @@ def _worker_proc(sim_fn: SimFn, wk_id: int, exp_id_b: bytes, wk_router_url: str)
     ga_sock.setsockopt(zmq.IDENTITY, se_u64(wk_id))
     ga_sock.connect(wk_router_url)
 
+    cur_gen = 0
+    best_ix = 0
+    best_fitness = -math.inf
+    best_data = None
+    agent_ix_b = None
+
     try:
         ga_sock.send_multipart([exp_id_b, b"init"])
-
-        cur_gen = 0
-        best_ix = 0
-        best_fitness = -math.inf
-        best_data = None
 
         while True:
             msgb = ga_sock.recv_multipart()

@@ -21,7 +21,7 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use chrono::Local;
 use serde_json::Value;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 pub fn run(path: &Path, broker_addr: String, test: bool, tui: bool) -> Result<bool> {
     bail_assert!(docker::is_installed()?, "Docker must be installed");
@@ -199,7 +199,7 @@ pub fn run(path: &Path, broker_addr: String, test: bool, tui: bool) -> Result<bo
         }
     };
 
-    if test {
+    if test && success {
         println!("Validating csv data...");
 
         let data_dir = out_dir.join("data");
@@ -242,18 +242,18 @@ pub fn run(path: &Path, broker_addr: String, test: bool, tui: bool) -> Result<bo
 fn exp_loop(
     sockets: &mut [zmq::PollItem; 2],
     ex_dealer: &zmq::Socket,
-    ui_dealer: &zmq::Socket,
+    ui_sock: &zmq::Socket,
     id_b: &[u8],
     out_dir: &Path,
 ) -> Result<ControlFlow<()>> {
     zmq::poll(sockets, -1)?;
 
-    if sockets[0].is_readable() {
-        let msgb = ex_dealer.recv_multipart(0)?;
+    let mut i = 0;
+    while let Ok(msgb) = ex_dealer.recv_multipart(zmq::DONTWAIT) {
         let cmd = msgb[0].as_slice();
         match cmd {
             b"prog" => {
-                ui_dealer.send_multipart(&msgb[2..], 0)?;
+                ui_sock.send_multipart(&msgb[2..], 0)?;
 
                 if msgb[2] == b"gen" && msgb[4] == b"done" {
                     let evaluation: PopEvaluation = serde_json::from_slice(&msgb[5])?;
@@ -265,6 +265,10 @@ fn exp_loop(
                         evaluation.best_fitness.to_string(),
                     ])?;
                     wtr.flush()?;
+                    // info!(
+                    //     "Generation finished: Best {} Avg {}",
+                    //     evaluation.best_fitness, evaluation.avg_fitness
+                    // );
                 }
             }
             b"save" => {
@@ -305,7 +309,7 @@ fn exp_loop(
                 }
             }
             b"done" => {
-                ui_dealer.send("done", 0)?;
+                ui_sock.send("done", 0)?;
                 return Ok(ControlFlow::Break(()));
             }
             b"error" => {
@@ -319,12 +323,20 @@ fn exp_loop(
             }
             _ => (),
         }
+
+        // If messages are arriving too fast, break loop to check for abort
+        i += 1;
+        if i >= 100 {
+            break;
+        }
     }
 
     if sockets[1].is_readable() {
-        let msg = ui_dealer.recv_bytes(0)?;
+        let msg = ui_sock.recv_bytes(0)?;
         if msg == b"abort" {
+            debug!("Sending abort to experiment thread");
             ex_dealer.send_multipart([b"abort", id_b], 0)?;
+            debug!("Experiment thread aborted");
             return Ok(ControlFlow::Break(()));
         }
     }

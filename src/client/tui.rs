@@ -33,6 +33,7 @@ pub struct App {
     avg_fitnesses: Vec<(f64, f64)>,
     best_fitnesses: Vec<(f64, f64)>,
     max_fitness: f64,
+    min_fitness: f64,
     // client state
     state: AppState,
     show_abort: bool,
@@ -53,6 +54,7 @@ impl App {
             avg_fitnesses: Vec::with_capacity(population_size),
             best_fitnesses: Vec::with_capacity(population_size),
             max_fitness: 0.0,
+            min_fitness: 0.0,
             state: AppState::Active,
             show_abort: false,
         })
@@ -64,7 +66,7 @@ impl App {
         loop {
             match self.tui_loop(&mut terminal, &ex_sock) {
                 Ok(ControlFlow::Break(_)) => break,
-                Ok(ControlFlow::Continue(_)) => (),
+                Ok(ControlFlow::Continue(_)) => continue,
                 Err(e) => {
                     error!("TUI error: {}", e);
                     break;
@@ -110,69 +112,68 @@ impl App {
             }
         }
 
-        if self.state == AppState::Active {
-            while let Ok(msgb) = ex_sock.recv_multipart(zmq::DONTWAIT) {
-                let prog_type = msgb[0].as_slice();
-                match prog_type {
-                    b"gen" => {
-                        let status = msgb[2].as_slice();
-                        match status {
-                            b"running" => {
-                                self.cur_gen = de_usize(&msgb[1])?;
-                                self.agents_done = 0;
-                            }
-                            b"done" => {
-                                let evaluation: PopEvaluation = serde_json::from_slice(&msgb[3])?;
-                                self.avg_fitnesses.push((
-                                    (self.avg_fitnesses.len() + 1) as f64,
-                                    evaluation.avg_fitness,
-                                ));
-                                self.best_fitnesses.push((
-                                    (self.best_fitnesses.len() + 1) as f64,
-                                    evaluation.best_fitness,
-                                ));
+        while let Ok(msgb) = ex_sock.recv_multipart(zmq::DONTWAIT) {
+            let prog_type = msgb[0].as_slice();
+            match prog_type {
+                b"gen" => {
+                    let status = msgb[2].as_slice();
+                    match status {
+                        b"running" => {
+                            self.cur_gen = de_usize(&msgb[1])?;
+                            self.agents_done = 0;
+                        }
+                        b"done" => {
+                            let evaluation: PopEvaluation = serde_json::from_slice(&msgb[3])?;
+                            self.avg_fitnesses.push((
+                                (self.avg_fitnesses.len() + 1) as f64,
+                                evaluation.avg_fitness,
+                            ));
+                            self.best_fitnesses.push((
+                                (self.best_fitnesses.len() + 1) as f64,
+                                evaluation.best_fitness,
+                            ));
 
-                                self.max_fitness = self.max_fitness.max(evaluation.best_fitness);
-                            }
-                            _ => continue,
+                            self.max_fitness = self.max_fitness.max(evaluation.best_fitness);
+                            self.min_fitness = self.min_fitness.min(evaluation.avg_fitness);
                         }
+                        _ => continue,
                     }
-                    b"agent" => {
-                        let status = msgb[2].as_slice();
-                        if status == b"done" {
-                            self.agents_done += 1;
-                        }
-                    }
-                    b"node" => {
-                        let nd_id = de_u64(&msgb[1])?;
-                        let status_u8 = de_u8(&msgb[2])?;
-                        let Some(status) = NodeStatus::from_repr(status_u8) else {
-                            warn!("🐋 Node {:x} sent an invalid status: {}", nd_id, status_u8);
-                            continue;
-                        };
-                        match status {
-                            NodeStatus::Pulling => {
-                                info!("🐋 Node {:x} is pulling the docker image...", nd_id)
-                            }
-                            NodeStatus::Crashed => warn!("🐋 Node {:x} crashed", nd_id),
-                            NodeStatus::Active => {
-                                info!("🐋 Node {:x} spawned your containers...", nd_id)
-                            }
-                            NodeStatus::Idle => {
-                                info!("🐋 Node {:x} is loafing around...", nd_id)
-                            }
-                        }
-                    }
-                    b"done" => {
-                        self.end_duration = Some(self.start_time.elapsed());
-                        self.state = AppState::Done;
-                    }
-                    b"crashed" => {
-                        self.end_duration = Some(self.start_time.elapsed());
-                        self.state = AppState::Crashed;
-                    }
-                    _ => continue,
                 }
+                b"agent" => {
+                    let status = msgb[2].as_slice();
+                    if status == b"done" {
+                        self.agents_done += 1;
+                    }
+                }
+                b"node" => {
+                    let nd_id = de_u64(&msgb[1])?;
+                    let status_u8 = de_u8(&msgb[2])?;
+                    let Some(status) = NodeStatus::from_repr(status_u8) else {
+                        warn!("🐋 Node {:x} sent an invalid status: {}", nd_id, status_u8);
+                        continue;
+                    };
+                    match status {
+                        NodeStatus::Pulling => {
+                            info!("🐋 Node {:x} is pulling the docker image...", nd_id)
+                        }
+                        NodeStatus::Crashed => warn!("🐋 Node {:x} crashed", nd_id),
+                        NodeStatus::Active => {
+                            info!("🐋 Node {:x} spawned your containers...", nd_id)
+                        }
+                        NodeStatus::Idle => {
+                            info!("🐋 Node {:x} is loafing around...", nd_id)
+                        }
+                    }
+                }
+                b"done" => {
+                    self.end_duration = Some(self.start_time.elapsed());
+                    self.state = AppState::Done;
+                }
+                b"crashed" => {
+                    self.end_duration = Some(self.start_time.elapsed());
+                    self.state = AppState::Crashed;
+                }
+                _ => continue,
             }
         }
 
@@ -237,7 +238,7 @@ impl WidgetRef for App {
         let [other_area, chart_area] =
             Layout::horizontal([Constraint::Percentage(30), Constraint::Fill(1)]).areas(main_area);
         let [info_area, logs_area] =
-            Layout::vertical([Constraint::Length(5), Constraint::Fill(1)]).areas(other_area);
+            Layout::vertical([Constraint::Length(7), Constraint::Fill(1)]).areas(other_area);
 
         // Info
         let lines = vec![
@@ -249,6 +250,22 @@ impl WidgetRef for App {
             info_line(
                 "Agents        : ",
                 format!("{} / {}", self.agents_done, self.population_size),
+            ),
+            info_line(
+                "Last Best Fit : ",
+                self.best_fitnesses
+                    .last()
+                    .unwrap_or(&(0.0, 0.0))
+                    .1
+                    .to_string(),
+            ),
+            info_line(
+                "Last Avg Fit  : ",
+                self.avg_fitnesses
+                    .last()
+                    .unwrap_or(&(0.0, 0.0))
+                    .1
+                    .to_string(),
             ),
         ];
 
@@ -289,15 +306,18 @@ impl WidgetRef for App {
                 Axis::default()
                     .title("Generation".yellow())
                     .dark_gray()
-                    .bounds([1.0, self.num_gens as f64])
-                    .labels(["1".into(), self.num_gens.to_string()]),
+                    .bounds([1.0, (self.cur_gen - 1) as f64])
+                    .labels(["1".into(), (self.cur_gen - 1).to_string()]),
             )
             .y_axis(
                 Axis::default()
                     .title("Fitness".yellow())
                     .dark_gray()
-                    .bounds([0.0, self.max_fitness])
-                    .labels(["0.0".into(), format!("{:.2}", self.max_fitness)]),
+                    .bounds([self.min_fitness, self.max_fitness])
+                    .labels([
+                        format!("{:.2}", self.min_fitness),
+                        format!("{:.2}", self.max_fitness),
+                    ]),
             )
             .render(chart_area, buf);
 

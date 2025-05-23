@@ -1,16 +1,16 @@
 use crate::util::{
     PopEvaluation,
-    blueprint::{GAConfig, InitMethod, SelectionMethod},
+    blueprint::{GAConfig, InitMethod},
 };
 use anyhow::{Result, bail};
-use rand::{Rng, rngs::ThreadRng, seq::IndexedRandom};
+use rand::seq::IndexedRandom;
 use rand_distr::{Bernoulli, Distribution};
 
-use super::{agent::Agent, genome::Species};
+use super::{agent::Agent, genome::Species, selector::Selector};
 
 pub trait GenericPopulation: Send {
     fn evaluate(&self) -> PopEvaluation;
-    fn evolve(&mut self);
+    fn evolve(&mut self) -> Result<()>;
     fn pack_agent(&self, ix: usize) -> Result<Vec<u8>>;
     fn pack_save(&self) -> Result<Vec<u8>>;
     fn update_agent_fitness(&mut self, ix: usize, fitness: f64);
@@ -99,53 +99,28 @@ impl<S: Species> GenericPopulation for Population<S> {
         }
     }
 
-    fn evolve(&mut self) {
+    fn evolve(&mut self) -> Result<()> {
         self.sort_agents();
 
         let psize = self.agents.len() as f64;
         let elite_end_ix = (psize * self.config.elitism_fraction).floor() as usize;
         let random_start_ix = (psize - (psize * self.config.random_fraction).floor()) as usize;
 
+        let selector = Selector::new(self.config.selection_method, &self.agents)?;
         let mut rng = rand::rng();
-        let total_fitness: f64 = self.agents.iter().map(|a| a.fitness).sum();
-
-        // TODO potential performance increase by defining the distribution up front
-        // let uniform_fitness_dist = Uniform::new(0.0, total_fitness);
-
-        let select_parent = |rng: &mut ThreadRng| match self.config.selection_method {
-            SelectionMethod::Tournament { size } => self
-                .agents
-                .choose_multiple(rng, size as usize)
-                .max_by(|x, y| x.fitness.partial_cmp(&y.fitness).expect("No NaN fitness"))
-                .expect("Agents vec is not empty"),
-            SelectionMethod::Roulette => {
-                if total_fitness == 0.0 {
-                    return self.agents.choose(rng).expect("Agents vec is not empty");
-                }
-                let pick: f64 = rng.random_range(0.0..total_fitness);
-                let mut cur = 0.0;
-                for agent in &self.agents {
-                    cur += agent.fitness;
-                    if cur >= pick {
-                        return agent;
-                    }
-                }
-                self.agents.last().expect("Agents vec is not empty")
-            }
-        };
 
         let mut children = Vec::with_capacity(random_start_ix - elite_end_ix);
         if self.config.crossover_probability > 0.0 {
-            let bern = Bernoulli::new(self.config.crossover_probability).unwrap();
+            let crossover_bern = Bernoulli::new(self.config.crossover_probability).unwrap();
             let crossover_method = self
                 .config
                 .crossover_method
                 .expect("Crossover method was asserted to be Some in blueprint validation");
             for _ in elite_end_ix..random_start_ix {
                 // TODO address case of same parent selected twice?
-                if bern.sample(&mut rng) {
-                    let p1 = select_parent(&mut rng);
-                    let p2 = select_parent(&mut rng);
+                if crossover_bern.sample(&mut rng) {
+                    let p1 = selector.select(&mut rng);
+                    let p2 = selector.select(&mut rng);
                     let mut child = Agent::crossover(&p1, &p2, crossover_method);
                     child.mutate(
                         self.config.mutation_probability,
@@ -153,7 +128,7 @@ impl<S: Species> GenericPopulation for Population<S> {
                     );
                     children.push(child);
                 } else {
-                    let p = select_parent(&mut rng);
+                    let p = selector.select(&mut rng);
                     let child = p.clone_and_mutate(
                         self.config.mutation_probability,
                         self.config.mutation_magnitude,
@@ -163,7 +138,7 @@ impl<S: Species> GenericPopulation for Population<S> {
             }
         } else {
             for _ in elite_end_ix..random_start_ix {
-                let p = select_parent(&mut rng);
+                let p = selector.select(&mut rng);
                 let child = p.clone_and_mutate(
                     self.config.mutation_probability,
                     self.config.mutation_magnitude,
@@ -179,6 +154,8 @@ impl<S: Species> GenericPopulation for Population<S> {
         for i in random_start_ix..self.agents.len() {
             self.agents[i] = Agent::new(self.species.random_genome(None));
         }
+
+        Ok(())
     }
 
     fn pack_agent(&self, ix: usize) -> Result<Vec<u8>> {

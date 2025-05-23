@@ -1,7 +1,7 @@
 use core::str;
 use std::{
     ops::ControlFlow,
-    thread,
+    thread::{self},
     time::{Duration, Instant},
 };
 
@@ -25,7 +25,7 @@ pub fn run(broker_addr: String, threads: Option<usize>, local: bool, test: bool)
 
     info!("🐋 Squid node starting with ID {}", &id_hex);
     info!("🐋 Detected {} cores", cores);
-    info!("🐋 Max worker threads: {}", &num_threads_s);
+    info!("🐋 Max workers: {}", &num_threads_s);
 
     let ctx = zmq::Context::new();
     let broker_sock = ctx.socket(zmq::DEALER)?;
@@ -70,7 +70,7 @@ pub fn run(broker_addr: String, threads: Option<usize>, local: bool, test: bool)
     register();
 
     const BK_HB_INTERVAL: Duration = Duration::from_secs(1);
-    const BK_TTL: Duration = Duration::from_secs(3);
+    const BK_TTL: Duration = Duration::from_secs(5);
     let mut last_bk_hb_out = Instant::now();
     let mut last_bk_hb_in = Instant::now();
 
@@ -100,50 +100,78 @@ pub fn run(broker_addr: String, threads: Option<usize>, local: bool, test: bool)
                 last_bk_hb_in = Instant::now();
             }
             b"spawn" => {
-                let exp_id_b = msgb[1].as_slice();
+                let exp_id_b = msgb[1].clone();
                 let exp_id = de_u64(&msgb[1])?;
-                let exp_id_hex = format!("{:x}", exp_id);
-                info!("Spawning container for experiment {}", &exp_id_hex);
-                let task_image = str::from_utf8(&msgb[2])?;
-                let port = de_u32(&msgb[3])?.to_string();
+                let exp_id_x = format!("{:x}", exp_id);
+                info!("Spawning container for experiment {}", &exp_id_x);
+                let task_image = String::from_utf8(msgb[2].clone())?;
+                let port = de_u32(&msgb[3])?; // first port of the group of 3
                 debug!("TASK IMAGE: {}", &task_image);
-                debug!("TASK PORT: {}", &port);
+                debug!("TASK PORT: {}", port);
                 debug!("TASK THREADS: {}", &num_threads_s);
                 debug!("TASK BROKER ADDR: {}", &broker_addr);
                 if !local && !task_image.starts_with("docker.io/library/") {
-                    send_status(&broker_sock, exp_id_b, NodeStatus::Pulling)?;
-                    if !docker::pull(task_image)?.success() {
-                        send_status(&broker_sock, exp_id_b, NodeStatus::Crashed)?;
+                    send_status(&broker_sock, &exp_id_b, NodeStatus::Pulling)?;
+                    if !docker::pull(&task_image)?.success() {
+                        send_status(&broker_sock, &exp_id_b, NodeStatus::Crashed)?;
                         return Ok(ControlFlow::Continue(()));
                     }
                 }
-                send_status(&broker_sock, exp_id_b, NodeStatus::Active)?;
+                send_status(&broker_sock, &exp_id_b, NodeStatus::Active)?;
 
-                let mut wk_broker_addr = broker_addr.as_str();
+                let mut wk_broker_addr = broker_addr.clone();
                 if wk_broker_addr == "localhost" {
                     // Set to docker internal ip for localhost
-                    wk_broker_addr = "172.17.0.1";
+                    wk_broker_addr = "172.17.0.1".to_string();
                 }
 
+                // Spawn worker containers
+                let exp_id_label = "squid_exp_id=".to_string() + &exp_id_x;
+                let exp_id_env = "SQUID_EXP_ID=".to_string() + &exp_id_x;
+                let addr_env = "SQUID_ADDR=".to_string() + &wk_broker_addr;
+                let port_env = "SQUID_PORT=".to_string() + &port.to_string();
+                let num_threads_env = "SQUID_NUM_THREADS=".to_string() + &num_threads_s;
                 if test {
                     docker::test_run(
-                        task_image,
-                        &exp_id_hex,
-                        wk_broker_addr,
-                        &port,
-                        &num_threads_s,
+                        &task_image,
+                        &exp_id_label,
+                        &exp_id_env,
+                        &addr_env,
+                        &port_env,
+                        &num_threads_env,
                     )?;
                 } else {
                     docker::run(
-                        task_image,
-                        &exp_id_hex,
-                        wk_broker_addr,
-                        &port,
-                        &num_threads_s,
+                        &task_image,
+                        &exp_id_label,
+                        &exp_id_env,
+                        &addr_env,
+                        &port_env,
+                        &num_threads_env,
                     )?;
                 }
 
+                // Supervisor thread
+                // TODO move this to function to catch errors, kill workers on disconnect
+                // let ctx_clone = ctx.clone();
+                // let exp_id_x_trunc = format!("{:x}", exp_id >> 32);
+                // let supervisor_span = error_span!("supervisor", exp_id = &exp_id_x_trunc);
+                // let supervisor_thread = thread::spawn(move || -> Result<()> {
+                //     let _guard = supervisor_span.enter();
+                //     supervisor(
+                //         exp_id,
+                //         id,
+                //         ctx_clone,
+                //         task_image,
+                //         wk_broker_addr,
+                //         port,
+                //         num_threads,
+                //         test,
+                //     )
+                // });
+
                 if local {
+                    // let _ = supervisor_thread.join();
                     return Ok(ControlFlow::Break(()));
                 }
             }
@@ -151,7 +179,8 @@ pub fn run(broker_addr: String, threads: Option<usize>, local: bool, test: bool)
                 let exp_id = de_u64(&msgb[1])?;
                 let exp_id_hex = format!("{:x}", exp_id);
                 info!("Aborting experiment {}", &exp_id_hex);
-                docker::kill_all(&exp_id_hex)?;
+                let exp_id_label = format!("label=squid_exp_id={}", &exp_id_hex);
+                docker::kill_by_exp(&exp_id_label)?;
             }
             _ => (),
         }
@@ -173,6 +202,149 @@ pub fn run(broker_addr: String, threads: Option<usize>, local: bool, test: bool)
     Ok(())
 }
 
+// Supervisor currently operates in the worker
+// fn supervisor(
+//     exp_id: u64,
+//     node_id: u64,
+//     ctx: zmq::Context,
+//     task_image: String,
+//     broker_addr: String,
+//     port: u32,
+//     num_workers: usize,
+//     test: bool,
+// ) -> Result<()> {
+//     let exp_id_b = exp_id.to_be_bytes();
+//     let exp_id_x = format!("{:x}", exp_id);
+//     let node_id_b = node_id.to_be_bytes();
+//
+//     let sv_url = format!("tcp://{}:{}", &broker_addr, port + 2);
+//     let ga_sock = ctx.socket(zmq::DEALER)?;
+//     // use node id as supervisor id
+//     ga_sock.set_identity(&node_id_b)?;
+//     ga_sock.set_linger(0)?;
+//     ga_sock.connect(&sv_url)?;
+//
+//     let worker_ids = (0..num_workers)
+//         .map(|_| rand::random::<u64>())
+//         .collect::<Vec<_>>();
+//     let worker_ids_b = serde_json::to_vec(&worker_ids)?;
+//     let mut worker_ids_x = worker_ids
+//         .iter()
+//         .map(|x| format!("{:x}", x))
+//         .collect::<Vec<_>>();
+//     ga_sock.send_multipart([exp_id_b.as_slice(), b"register", &worker_ids_b], 0)?;
+//
+//     if ga_sock.poll(zmq::POLLIN, 5000)? > 0 {
+//         let msgb = ga_sock.recv_multipart(0)?;
+//         let cmd = msgb[0].as_slice();
+//         match cmd {
+//             b"registered" => {
+//                 info!("Registered with experiment thread");
+//             }
+//             b"stop" | b"kill" => {
+//                 return Ok(());
+//             }
+//             x => error!(
+//                 "Broker sent invalid response to registration: {}",
+//                 str::from_utf8(x)?
+//             ),
+//         }
+//     } else {
+//         error!("Broker did not respond. Terminating.");
+//         return Ok(());
+//     }
+//
+//     // Spawn worker containers
+//     let exp_id_label = "squid_exp_id=".to_string() + &exp_id_x;
+//     let exp_id_label_query = "label=".to_string() + &exp_id_label;
+//     let exp_id_env = "SQUID_EXP_ID=".to_string() + &exp_id_x;
+//     let addr_env = "SQUID_ADDR=".to_string() + &broker_addr;
+//     let port_env = "SQUID_PORT=".to_string() + &port.to_string();
+//     for wk_id_x in &worker_ids_x {
+//         let wk_id_label = format!("squid_worker_id={}", wk_id_x);
+//         let wk_id_env = format!("SQUID_WORKER_ID={}", wk_id_x);
+//         if test {
+//             docker::test_run(
+//                 &task_image,
+//                 &exp_id_label,
+//                 &wk_id_label,
+//                 &exp_id_env,
+//                 &addr_env,
+//                 &port_env,
+//                 &wk_id_env,
+//             )?;
+//         } else {
+//             docker::run(
+//                 &task_image,
+//                 &exp_id_label,
+//                 &wk_id_label,
+//                 &exp_id_env,
+//                 &addr_env,
+//                 &port_env,
+//                 &wk_id_env,
+//             )?;
+//         }
+//     }
+//
+//     const BK_TTL_MS: i64 = 15000;
+//     let mut supervisor_loop = || -> Result<ControlFlow<()>> {
+//         if ga_sock.poll(zmq::POLLIN, BK_TTL_MS)? > 0 {
+//             let msgb = ga_sock.recv_multipart(0)?;
+//             let cmd = msgb[0].as_slice();
+//             match cmd {
+//                 b"hb" => {
+//                     let alive_worker_ids = docker::ps_by_exp(&exp_id_label_query)?;
+//                     let mut dead = Vec::with_capacity(worker_ids_x.len());
+//                     worker_ids_x.retain(|id| {
+//                         if !alive_worker_ids.contains(id) {
+//                             dead.push(
+//                                 u64::from_str_radix(id, 16).expect("Worker id is hex string"),
+//                             );
+//                             false
+//                         } else {
+//                             true
+//                         }
+//                     });
+//                     if dead.len() > 0 {
+//                         let dead_b = serde_json::to_vec(&dead)?;
+//                         ga_sock.send_multipart([exp_id_b.as_slice(), b"dead", &dead_b], 0)?;
+//                     } else {
+//                         ga_sock.send_multipart([exp_id_b.as_slice(), b"ok"], 0)?;
+//                     }
+//                 }
+//                 b"registered" => (),
+//                 b"stop" => return Ok(ControlFlow::Break(())),
+//                 b"kill" => {
+//                     info!("Experiment thread sent kill signal. Terminating.");
+//                     docker::kill_by_exp(&exp_id_label_query)?;
+//                     return Ok(ControlFlow::Break(()));
+//                 }
+//                 _ => (),
+//             }
+//         } else {
+//             error!("Lost connection to broker experiment thread. Terminating.");
+//             docker::kill_by_exp(&exp_id_label_query)?;
+//             return Ok(ControlFlow::Break(()));
+//         }
+//
+//         Ok(ControlFlow::Continue(()))
+//     };
+//
+//     loop {
+//         match supervisor_loop() {
+//             Ok(ControlFlow::Continue(_)) => continue,
+//             Ok(ControlFlow::Break(_)) => break,
+//             Err(e) => {
+//                 error!("Supervisor loop: {:?}", e);
+//                 ga_sock
+//                     .send_multipart([exp_id_b.as_slice(), b"error", e.to_string().as_bytes()], 0)?;
+//             }
+//         }
+//     }
+//
+//     Ok(())
+// }
+//
 fn send_status(broker_sock: &zmq::Socket, exp_id_b: &[u8], status: NodeStatus) -> Result<()> {
     broker_sock.send_multipart(
         ["status".as_bytes(), exp_id_b, &(status as u8).to_be_bytes()],

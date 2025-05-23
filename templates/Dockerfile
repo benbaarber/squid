@@ -4,7 +4,8 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install -r requirements.txt
-RUN --mount=type=ssh pip install git+ssh://git@gitlab.com/VivumComputing/scientific/robotics/dnfs/evolution/squid.git#egg=squid&subdirectory=worker/python
+ENV GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no"
+RUN --mount=type=ssh pip install git+ssh://git@gitlab.com/VivumComputing/scientific/tools/squid.git#egg=squid&subdirectory=worker/python
 
 COPY simulation/ simulation/
 

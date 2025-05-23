@@ -7,7 +7,7 @@ use core::str;
 use std::{fs, path::PathBuf, thread};
 
 use crate::util::blueprint::Blueprint;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use tracing::{error_span, level_filters::LevelFilter};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -79,6 +79,24 @@ enum Commands {
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    let log_level = match std::env::var("SQUID_LOG")
+        .unwrap_or_else(|_| "INFO".to_string())
+        .to_uppercase()
+        .as_str()
+    {
+        "OFF" => LevelFilter::OFF,
+        "ERROR" => LevelFilter::ERROR,
+        "WARN" => LevelFilter::WARN,
+        "INFO" => LevelFilter::INFO,
+        "DEBUG" => LevelFilter::DEBUG,
+        "TRACE" => LevelFilter::TRACE,
+        x => {
+            eprintln!("Invalid log level: {}", x);
+            eprintln!("Using default log level: INFO");
+            LevelFilter::INFO
+        }
+    };
+
     match args.command {
         Commands::Init { path } => {
             fs::create_dir_all(&path)?;
@@ -115,13 +133,15 @@ fn main() -> Result<()> {
             test,
             no_tui,
         } => {
+            bail_assert!(path.exists(), "No such file or directory: {:?}", &path);
+
             // Setup logging
             let mut stdout_buffer = None;
-            let filter = tracing_subscriber::filter::Targets::new()
-                .with_target("squid::client", LevelFilter::INFO);
+            let filter =
+                tracing_subscriber::filter::Targets::new().with_target("squid::client", log_level);
             if test {
                 tracing_subscriber::fmt()
-                    .with_max_level(LevelFilter::DEBUG)
+                    .with_max_level(log_level)
                     .with_target(false)
                     .init();
             } else if no_tui {
@@ -189,7 +209,10 @@ fn main() -> Result<()> {
             }
         }
         Commands::Broker { once } => {
-            tracing_subscriber::fmt().with_target(false).init();
+            tracing_subscriber::fmt()
+                .with_target(false)
+                .with_max_level(log_level)
+                .init();
             broker::run(once)?;
         }
         Commands::Node {
@@ -197,7 +220,10 @@ fn main() -> Result<()> {
             num_threads,
             local,
         } => {
-            tracing_subscriber::fmt().with_target(false).init();
+            tracing_subscriber::fmt()
+                .with_target(false)
+                .with_max_level(log_level)
+                .init();
             let broker_addr = if local {
                 "localhost".to_string()
             } else {
