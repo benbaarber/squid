@@ -169,11 +169,6 @@ pub fn run(broker_addr: String, threads: Option<usize>, local: bool, test: bool)
                 //         test,
                 //     )
                 // });
-
-                if local {
-                    // let _ = supervisor_thread.join();
-                    return Ok(ControlFlow::Break(()));
-                }
             }
             b"abort" => {
                 let exp_id = de_u64(&msgb[1])?;
@@ -181,6 +176,9 @@ pub fn run(broker_addr: String, threads: Option<usize>, local: bool, test: bool)
                 info!("Aborting experiment {}", &exp_id_hex);
                 let exp_id_label = format!("label=squid_exp_id={}", &exp_id_hex);
                 docker::kill_by_exp(&exp_id_label)?;
+            }
+            b"kill" => {
+                return Ok(ControlFlow::Break(()));
             }
             _ => (),
         }

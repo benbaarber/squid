@@ -66,7 +66,7 @@ pub fn test_run(
     addr_env: &str,
     port_env: &str,
     num_threads_env: &str,
-) -> io::Result<()> {
+) -> io::Result<Child> {
     Command::new("docker")
         .args([
             "run",
@@ -83,18 +83,7 @@ pub fn test_run(
             num_threads_env,
             image,
         ])
-        .spawn()?;
-
-    // debug!(
-    //     "Worker stdout:\n{}",
-    //     String::from_utf8_lossy(&output.stdout)
-    // );
-    // debug!(
-    //     "Worker stderr:\n{}",
-    //     String::from_utf8_lossy(&output.stderr)
-    // );
-
-    Ok(())
+        .spawn()
 }
 
 pub fn ps_by_exp(exp_label_query: &str) -> io::Result<Vec<String>> {

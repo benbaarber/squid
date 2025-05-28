@@ -39,6 +39,7 @@
 - registered
 - spawn (id: `u64`) (task_image: `str`) (port: `u32`)
 - abort (id: `u64`)
+- kill
 - [TODO] meta (info req)
 
 ### Node -> Broker

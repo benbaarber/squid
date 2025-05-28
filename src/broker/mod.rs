@@ -110,6 +110,7 @@ pub fn run(once: bool) -> Result<()> {
             });
 
             if once && completed_exps > 0 {
+                broadcast_router(&nodes, &nd_router, &["kill".as_bytes()])?;
                 return Ok(ControlFlow::Break(()));
             }
 
