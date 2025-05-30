@@ -1,8 +1,15 @@
 [experiment]
+# The tag of the docker image for this experiment. If it begins with
+# `docker.io/library/`, it will not be pushed to the container registry, and
+# only built and used locally. Otherwise, it should take the form
+# `registry.gitlab.com/vivumcomputing/path/to/repository/and_optional_name:tag`.
 image = "docker.io/library/squid-task-example"
+# Agent parameter json files and experiment results will be saved here. Path is
+# relative to location of this file.
 out_dir = "./saved_agents"
 
 [nn]
+# For now, "CTRNN" is the only option here.
 type = "CTRNN"
 input_size = 7
 hidden_size = 2
@@ -12,17 +19,33 @@ step_size = 0.1
 [ga]
 population_size = 50
 num_generations = 100
-elitism_fraction = 0.1
-random_fraction = 0.0
-selection_fraction = 1.0
-mutation_probability = 0.1
-mutation_magnitude = 1
+elitism_fraction = 0.1 # % of sorted population to survive to the next generation with no mutations
+random_fraction = 0.0 # % of each generation that are newly generated random agents
+selection_fraction = 1.0 # % of population to be included in selection
+mutation_probability = 0.1 # probability a single parameter will be mutated
+mutation_magnitude = 1 # scaling factor for mutations
+# Options:
+# `{ type = "Flat" }` - all agents start with 0 for all parameters
+# `{ type = "Random", seed? = int }` - randomized agents with an optional RNG seed value
+# `{ type = "Seeded", dir = "path/to/agents/dir", mutate = bool }` - seeded population
 init_method = { type = "Random" }
+# Options:
+# `{ type = "Softmax" }` - parents are selected via softmax distribution of their fitness scores
+# `{ type = "Roulette" }` - roulette wheel selection
+# `{ type = "Tournament", size = int }` - tournament selection
 selection_method = { type = "Roulette" }
-crossover_probability = 0.5
+crossover_probability = 0.5 # probability each child of the next generation will be from crossover, otherwise mutated
+# Options:
+# `{ type = "Uniform" }` - each parameter has an independent and equal probability of coming from either parent
+# `{ type = "NPoint", n = int }` - n-point crossover
 crossover_method = { type = "Uniform" }
-save_every = 10
-save_fraction = 0.1
+save_every = 10 # save best agents periodically after this many generations
+save_fraction = 0.1 # % of sorted population to save
 
+# Format of experimental data to save. Squid worker implementation must match this format.
 [csv_data]
+# This results in a file called `out_dir/data/somedata.csv` being created with
+# columns `gen, h1, h2, h3` (gen is always included). In turn, the simulation
+# function passed to the squid worker must include `{ "somedata": [h1values,
+# h2values, h3values]}` in the data dict.
 somedata = ["h1", "h2", "h3"]
