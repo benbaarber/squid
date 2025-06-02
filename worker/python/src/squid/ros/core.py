@@ -14,26 +14,18 @@ class AgentNode(Node, ABC):
     """
     An abstract class that inherits from the rclpy `Node` class.
 
-    Adds a couple key properties:
-    - `model_name` is the name of the Gazebo model this node is controlling (e.g. "x500_0")
-    - `ros_prefix` is just `model_name` with a leading "/", for convenience. Useful for specifying topic names (e.g. `ros_prefix + "/imu"`)
-    - `model_sdf` is the sdf string of the model. Used for spawning instances of the model into the Gazebo world.
+    The index of the process is provided via `self.squid_ix`, and should be used to
+    identify which model to control.
 
-    Most importantly, this class includes one abstract method, `sim`, whose implementation is responsible for
+    This class includes one abstract method, `sim`, whose implementation is responsible for
     simulating and evaluating the agent.
 
     This class also sets the `use_sim_time` ROS parameter to true.
     """
 
-    model_name: str
-    ros_prefix: str
-    model_sdf: str
-
     def __init__(self, **kwargs):
         node_name = kwargs.pop("node_name")
-        self.model_name = kwargs.pop("model_name")
-        self.ros_prefix = "/" + self.model_name
-        self.model_sdf = kwargs.pop("model_sdf")
+        self.squid_ix = kwargs.pop("squid_ix")
         super().__init__(node_name, **kwargs)
         self.set_parameters([Parameter("use_sim_time", Parameter.Type.BOOL, True)])
 
@@ -79,33 +71,28 @@ def _make_sdf_and_name(sdf: str, i: int):
 
 def _ros_worker_proc(
     Node: Type[AgentNode],
-    model_sdf: str,
     i: int,
     wk_id: int,
     exp_id_b: bytes,
     wk_router_url: str,
 ):
-    sdf, model_name = _make_sdf_and_name(model_sdf, i)
     rclpy.init()
     node = Node(
-        model_name=model_name,
-        model_sdf=sdf,
-        node_name=model_name + "_agent",
+        node_name=f"squid_rosagent_{i}",
+        squid_ix=i,
     )
     _worker_proc(node.sim, wk_id, exp_id_b, wk_router_url)
     node.destroy_node()
     rclpy.shutdown()
 
 
-def ros_worker(node_cls: Type[AgentNode], model_sdf: str):
+def ros_worker(node_cls: Type[AgentNode]):
     """
     Run the Squid ROS node worker.
 
     This function must be called in the entrypoint of the simulation docker image.
 
     :param node_cls: A class that inherits from `AgentNode` with a `sim` implementation.
-    :param model_sdf: The original sdf string of the model. Will be internally modified and
-    distributed to workers.
     """
 
     def proc_factory(exp_id_b, wk_router_url, wk_ids):
@@ -115,7 +102,6 @@ def ros_worker(node_cls: Type[AgentNode], model_sdf: str):
                 target=_ros_worker_proc,
                 args=(
                     node_cls,
-                    model_sdf,
                     i,
                     wk_id,
                     exp_id_b,

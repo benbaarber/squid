@@ -609,8 +609,8 @@ fn experiment(
                             // TODO notify client
                             let dead: Vec<u64> = serde_json::from_slice(&msgb[3])?;
                             for wk_id in dead {
+                                warn!("Worker {:x} died", wk_id);
                                 if let Some(worker) = workers.remove(&wk_id) {
-                                    warn!("Worker {:x} died", wk_id);
                                     if let Some(ix) = worker.agent_ix {
                                         debug!("Pushing {} to stack", ix);
                                         agent_stack.push(ix);
@@ -626,10 +626,10 @@ fn experiment(
                                             wk.agent_ix = Some(ix);
                                         }
                                     }
-                                    supervisors.entry(sv_id).and_modify(|sv| {
-                                        sv.worker_ids.remove(&wk_id);
-                                    });
                                 }
+                                supervisors.entry(sv_id).and_modify(|sv| {
+                                    sv.worker_ids.remove(&wk_id);
+                                });
                             }
                         }
                         _ => (),

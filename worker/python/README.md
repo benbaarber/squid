@@ -5,6 +5,7 @@ The Squid worker python API
 ## How It Works
 
 The `squid.worker(sim_fn)` function starts a simulation loop:
+
 - Receives an agent from the GA thread running on the Squid broker.
 - Passes the agent's parameters as a JSON string to your simulation function `sim_fn`.
 - Sends the fitness score and optional additional simulation data (as a `dict`) back to the broker.
@@ -25,15 +26,17 @@ The generic worker takes in a simulation function and runs it as it receives age
 
 1. **Define your simulation function**
 
-   Your function must take a genome JSON string and return a fitness score `float` and an optional `dict` for additional simulation data. 
+   Your function must take a genome JSON string and return a fitness score `float` and an optional `dict` for additional simulation data.
 
    The dict should mirror the `[csv_data]` section in your blueprint file and take the form:
+
    ```py
    {
       "csv_data_key": [row1, row2, ...],
       ...
    }
    ```
+
    where the rows are lists of floats that line up with the headers specified in the blueprint.
    These rows will be appended to the csv files for the best agent after each generation.
 
@@ -58,7 +61,7 @@ The generic worker takes in a simulation function and runs it as it receives age
       fitness = 12.4
       sim_data = {
          "sensor_outputs": [
-            [0.1, 0.2, 0.3, 0.4], 
+            [0.1, 0.2, 0.3, 0.4],
             [0.5, 0.6, 0.7, 0.8]
          ]
       }
@@ -81,11 +84,17 @@ The generic worker takes in a simulation function and runs it as it receives age
 
 ### ROS Worker
 
-The ROS worker is an extension of the Squid worker that is specific to running a multiagent simulation in ROS and Gazebo. It takes in a class that inherits from `squid.ros.AgentNode` (which in turn inherits from the ROS `Node` class) as well as the SDF string of the model to be simulated. 
+The ROS worker is an extension of the Squid worker that is specific to running
+a multiagent simulation in ROS and Gazebo. It takes in a class that inherits
+from `squid.ros.AgentNode` (which in turn inherits from the ROS `Node` class)
+as well as the SDF string of the model to be simulated.
 
 1. **Define your node class**
 
-   In the same way you start a python ROS node project, begin by creating a node class. However, instead of inheriting from rclpy's `Node`, inherit from squid's `AgentNode`.
+   In the same way you start a python ROS node project, begin by creating a
+   node class. However, instead of inheriting from rclpy's `Node`, inherit from
+   squid's `AgentNode`. Also, use `self.squid_ix`, defined in the `AgentNode`
+   implementation, to identify the gazebo model to control.
 
    ```py
    import squid.ros
@@ -93,17 +102,20 @@ The ROS worker is an extension of the Squid worker that is specific to running a
    class ExampleNode(squid.ros.AgentNode):
       def __init__(self, **kwargs):
          super().__init__(**kwargs)
-         
+         self.model_name = f"x500_{self.squid_ix}"
+
          # ROS node setup
          ...
-      
+
       # ROS node callbacks
       ...
    ```
 
 2. **Implement the `sim` method**
 
-   `AgentNode` also defines one abstract method called `sim`. This method has the same signature as the simulation function in the [generic worker](#generic-worker), and is called the same way internally.
+   `AgentNode` also defines one abstract method called `sim`. This method has
+   the same signature as the simulation function in the [generic
+   worker](#generic-worker), and is called the same way internally.
 
    ```py
    import squid.ros
@@ -149,3 +161,4 @@ The ROS worker is an extension of the Squid worker that is specific to running a
 ### ROS
 
 - rclpy
+
