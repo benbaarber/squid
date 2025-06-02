@@ -1,4 +1,0 @@
-pyzmq
-orjson
-build
-twine
