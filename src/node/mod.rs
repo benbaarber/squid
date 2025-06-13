@@ -20,7 +20,9 @@ pub fn run(broker_addr: String, threads: Option<usize>, local: bool, test: bool)
 
     let _status = NodeStatus::Idle;
     let cores = thread::available_parallelism()?.get();
-    let num_threads = threads.unwrap_or(cores).min(cores);
+    let num_threads = threads
+        .unwrap_or_else(|| if test { 1 } else { cores })
+        .min(cores);
     let num_threads_s = num_threads.to_string();
 
     info!("🐋 Squid node starting with ID {}", &id_hex);

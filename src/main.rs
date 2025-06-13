@@ -40,7 +40,7 @@ enum Commands {
         /// Run in local mode - spawns a squid broker and node locally and runs the experiment on your device
         #[arg(short, long)]
         local: bool,
-        /// If running in local mode, specifies number of worker threads to spawn (default: use all available cores)
+        /// If running in local or test mode, specifies number of worker threads to spawn (local default: use all available cores, test default: 1)
         #[arg(short, long)]
         num_threads: Option<usize>,
         /// Run in test mode - like local mode but spawns only one worker and quits after one agent
@@ -135,6 +135,10 @@ fn main() -> Result<()> {
         } => {
             bail_assert!(path.exists(), "No such file or directory: {:?}", &path);
 
+            if num_threads.is_some_and(|t| t == 0) {
+                bail!("`num_threads` must be greater than 0");
+            }
+
             // Setup logging
             let mut stdout_buffer = None;
             let filter =
@@ -176,14 +180,12 @@ fn main() -> Result<()> {
                 let broker_thread =
                     thread::spawn(|| error_span!("broker").in_scope(|| broker::run(true)));
                 let broker_url_clone = broker_addr.clone();
-                let node_thread = thread::spawn(|| {
+                let node_thread = thread::spawn(move || {
                     error_span!("node")
-                        .in_scope(|| node::run(broker_url_clone, Some(1), true, true))
+                        .in_scope(|| node::run(broker_url_clone, num_threads, true, true))
                 });
-                let success = match client::run(&path, broker_addr, true, false) {
-                    Ok(s) => s,
-                    Err(e) => return Err(e),
-                };
+                let success =
+                    client::run(&path, broker_addr, Some(num_threads.unwrap_or(1)), false)?;
                 broker_thread.join().unwrap()?;
                 node_thread.join().unwrap()?;
 
@@ -197,11 +199,11 @@ fn main() -> Result<()> {
                 let broker_url_clone = broker_addr.clone();
                 let node_thread =
                     thread::spawn(move || node::run(broker_url_clone, num_threads, true, false));
-                client::run(&path, broker_addr, false, !no_tui)?;
+                client::run(&path, broker_addr, None, !no_tui)?;
                 broker_thread.join().unwrap()?;
                 node_thread.join().unwrap()?;
             } else {
-                client::run(&path, broker_addr, false, !no_tui)?;
+                client::run(&path, broker_addr, None, !no_tui)?;
             }
 
             if let Some(buf) = stdout_buffer {

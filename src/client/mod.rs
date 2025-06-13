@@ -23,7 +23,12 @@ use chrono::Local;
 use serde_json::Value;
 use tracing::{debug, error, info};
 
-pub fn run(path: &Path, broker_addr: String, test: bool, tui: bool) -> Result<bool> {
+pub fn run(
+    path: &Path,
+    broker_addr: String,
+    test_threads: Option<usize>,
+    tui: bool,
+) -> Result<bool> {
     bail_assert!(docker::is_installed()?, "Docker must be installed");
 
     let bpath = path.join("squid.toml");
@@ -56,9 +61,9 @@ pub fn run(path: &Path, broker_addr: String, test: bool, tui: bool) -> Result<bo
         .with_context(|| format!("Failed to parse blueprint file `{}`", bpath.display()))?;
     info!("🔧 Read blueprint from `{}`", bpath.display());
     blueprint.validate()?;
-    if test {
+    if let Some(t) = test_threads {
         blueprint.ga.num_generations = 1;
-        blueprint.ga.population_size = 1;
+        blueprint.ga.population_size = t;
         blueprint.ga.save_fraction = 1.0;
     }
     let blueprint_s = toml::to_string(&blueprint)?;
@@ -199,7 +204,7 @@ pub fn run(path: &Path, broker_addr: String, test: bool, tui: bool) -> Result<bo
         }
     };
 
-    if test && success {
+    if test_threads.is_some() && success {
         println!("Validating csv data...");
 
         let data_dir = out_dir.join("data");
