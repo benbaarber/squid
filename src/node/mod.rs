@@ -26,7 +26,11 @@ pub fn run(broker_addr: String, threads: Option<usize>, local: bool, test: bool)
         .min(cores);
     let num_threads_s = num_threads.to_string();
 
-    info!("🐋 Squid node starting with ID {}", &id_hex);
+    info!(
+        "🐋 Squid node v{} starting with ID {}",
+        env!("CARGO_PKG_VERSION"),
+        &id_hex
+    );
     info!("🐋 Detected {} cores", cores);
     info!("🐋 Max workers: {}", &num_threads_s);
 

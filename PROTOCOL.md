@@ -2,12 +2,13 @@
 
 ### Client -> Broker
 
-- ping
+- ping (major: `str`) (minor: `str`)
 - run (id: `u64`) (blueprint: `Blueprint`) (seeds: `Vec<Species>`)
 
 ### Broker -> Client
 
 - pong
+- pang (version: `str`)
 - redirect (port: `u32`)
 - error (message: `str`)
 
@@ -103,7 +104,8 @@
 5556 - broker (router) <- node (dealer)
 
 5600-5699 reserved
-- (5600 + (n * 3)) - thread n (dealer) <- client (dealer)
-- (5600 + (n * 3) + 1) - thread n (router) <- worker (dealer)
-- (5600 + (n * 3) + 2) - thread n (router) <- supervisor (dealer)
-for n in [0, 32]
+
+- (5600 + (n \* 3)) - thread n (dealer) <- client (dealer)
+- (5600 + (n \* 3) + 1) - thread n (router) <- worker (dealer)
+- (5600 + (n \* 3) + 2) - thread n (router) <- supervisor (dealer)
+  for n in [0, 32]

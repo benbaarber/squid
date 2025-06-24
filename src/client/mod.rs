@@ -142,57 +142,69 @@ pub fn run(
 
     let ex_sock = ctx.socket(zmq::PAIR)?;
     ex_sock.bind("inproc://experiment")?;
-    let exp_thread = thread::spawn(move || -> Result<()> {
-        let id_b = id.to_be_bytes();
-        let ui_sock = ctx.socket(zmq::PAIR)?;
-        ui_sock.connect("inproc://experiment")?;
-        let broker_sock = ctx.socket(zmq::DEALER)?;
-        broker_sock.set_identity(&id_b)?;
-        broker_sock.connect(&broker_url)?;
+    let exp_thread = thread::spawn(move || -> bool {
+        let ui_sock = ctx.socket(zmq::PAIR).unwrap();
+        ui_sock.connect("inproc://experiment").unwrap();
+        match (|| -> Result<bool> {
+            let id_b = id.to_be_bytes();
+            let broker_sock = ctx.socket(zmq::DEALER)?;
+            broker_sock.set_identity(&id_b)?;
+            broker_sock.connect(&broker_url)?;
 
-        info!("🧪 Starting experiment {:x}", id);
-        let blueprint_b = blueprint_s.as_bytes();
-        broker_sock.send_multipart(["run".as_bytes(), &id_b, &blueprint_b, &seeds_b], 0)?;
+            info!("🧪 Starting experiment {:x}", id);
+            let blueprint_b = blueprint_s.as_bytes();
+            broker_sock.send_multipart(["run".as_bytes(), &id_b, &blueprint_b, &seeds_b], 0)?;
 
-        if broker_sock.poll(zmq::POLLIN, 5000)? > 0 {
-            let msgb = broker_sock.recv_multipart(0)?;
-            if msgb[0] == b"redirect" {
-                let port = de_u32(&msgb[1])?;
-                let exp_url = format!("tcp://{}:{}", &broker_addr, port);
-                broker_sock.disconnect(&broker_url)?;
-                broker_sock.connect(&exp_url)?;
-                info!("🔗 Experiment DEALER socket connected to {}", &exp_url);
+            if broker_sock.poll(zmq::POLLIN, 5000)? > 0 {
+                let msgb = broker_sock.recv_multipart(0)?;
+                let cmd = msgb[0].as_slice();
+                match cmd {
+                    b"redirect" => {
+                        let port = de_u32(&msgb[1])?;
+                        let exp_url = format!("tcp://{}:{}", &broker_addr, port);
+                        broker_sock.disconnect(&broker_url)?;
+                        broker_sock.connect(&exp_url)?;
+                        info!("🔗 Experiment DEALER socket connected to {}", &exp_url);
 
-                broker_sock.send_multipart(["run".as_bytes(), &id_b], 0)?;
+                        broker_sock.send_multipart(["run".as_bytes(), &id_b], 0)?;
+                    }
+                    b"error" => {
+                        let error = str::from_utf8(&msgb[1])?;
+                        bail!("Broker error: {}", error);
+                    }
+                    x => bail!(
+                        "Broker did not respond with redirect, sent {}",
+                        str::from_utf8(x)?
+                    ),
+                }
             } else {
-                ui_sock.send("crashed", 0)?;
-                bail!(
-                    "Broker did not respond with redirect, sent {}",
-                    str::from_utf8(&msgb[0])?
-                );
+                bail!("Timed out waiting for broker to send redirect port.");
             }
-        } else {
-            ui_sock.send("crashed", 0)?;
-            bail!("Timed out waiting for broker to send redirect port.");
-        }
 
-        let mut sockets = [
-            broker_sock.as_poll_item(zmq::POLLIN),
-            ui_sock.as_poll_item(zmq::POLLIN),
-        ];
-        loop {
-            match exp_loop(&mut sockets, &broker_sock, &ui_sock, &id_b, &out_dir_clone) {
-                Ok(ControlFlow::Break(_)) => break,
-                Ok(ControlFlow::Continue(_)) => continue,
-                Err(e) => {
-                    ui_sock.send("crashed", 0)?;
-                    broker_sock.send_multipart(["abort".as_bytes(), &id_b], 0)?;
-                    bail!("Exp loop error: {:#}", e);
+            let mut sockets = [
+                broker_sock.as_poll_item(zmq::POLLIN),
+                ui_sock.as_poll_item(zmq::POLLIN),
+            ];
+            loop {
+                match exp_loop(&mut sockets, &broker_sock, &ui_sock, &id_b, &out_dir_clone) {
+                    Ok(ControlFlow::Break(_)) => break,
+                    Ok(ControlFlow::Continue(_)) => continue,
+                    Err(e) => {
+                        broker_sock.send_multipart(["abort".as_bytes(), &id_b], 0)?;
+                        bail!("Exp loop error: {:#}", e);
+                    }
                 }
             }
-        }
 
-        Ok(())
+            Ok(true)
+        })() {
+            Ok(s) => s,
+            Err(e) => {
+                error!("{}", e.to_string());
+                ui_sock.send("crashed", 0).unwrap();
+                false
+            }
+        }
     });
 
     if tui {
@@ -200,16 +212,11 @@ pub fn run(
         app.run(ex_sock)?;
     }
 
-    let mut success = match exp_thread.join().unwrap() {
-        Ok(()) => {
-            info!("🧪 Experiment done");
-            true
-        }
-        Err(e) => {
-            error!("{}", e.to_string());
-            false
-        }
-    };
+    let mut success = exp_thread.join().unwrap();
+
+    if success {
+        info!("🧪 Experiment done");
+    }
 
     if test_threads.is_some() && success {
         println!("Validating csv data...");
@@ -383,16 +390,28 @@ fn ping_broker(ctx: &zmq::Context, broker_url: &str) -> Result<()> {
     let temp_sock = ctx.socket(zmq::DEALER)?;
     temp_sock.set_linger(0)?;
     temp_sock.connect(broker_url)?;
-    temp_sock.send("ping", 0)?;
+    temp_sock.send_multipart(
+        [
+            "ping",
+            env!("CARGO_PKG_VERSION_MAJOR"),
+            env!("CARGO_PKG_VERSION_MINOR"),
+        ],
+        0,
+    )?;
     if temp_sock.poll(zmq::POLLIN, 5000)? > 0 {
-        let msgb = temp_sock.recv_bytes(0)?;
-        if msgb == b"pong" {
-            info!("🦑 Connected to Squid broker at {}", broker_url);
-        } else {
-            bail!(
-                "Squid broker responded to ping with {}",
-                str::from_utf8(&msgb)?
-            );
+        let msgb = temp_sock.recv_multipart(0)?;
+        let cmd = msgb[0].as_slice();
+        match cmd {
+            b"pong" => info!("🦑 Connected to Squid broker at {}", broker_url),
+            b"pang" => {
+                let broker_version = str::from_utf8(&msgb[1])?;
+                bail!(
+                    "Squid version mismatch (client={} broker={}) ... update required",
+                    env!("CARGO_PKG_VERSION"),
+                    broker_version
+                );
+            }
+            x => bail!("Squid broker responded to ping with {}", str::from_utf8(x)?),
         }
     } else {
         bail!("Squid broker was unresponsive at {}", broker_url);

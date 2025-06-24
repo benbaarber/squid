@@ -53,7 +53,7 @@ struct Worker {
 }
 
 pub fn run(once: bool) -> Result<()> {
-    info!("🦑 Broker starting up...");
+    info!("🦑 Broker v{} starting up...", env!("CARGO_PKG_VERSION"));
 
     let mut nodes = HashMap::<u64, Node>::new();
     let mut experiments = HashMap::<u64, Experiment>::new();
@@ -129,7 +129,23 @@ pub fn run(once: bool) -> Result<()> {
             let exp_id_b = msgb[0].as_slice();
             let cmd = msgb[1].as_slice();
             match cmd {
-                b"ping" => cl_router.send_multipart([exp_id_b, b"pong"], 0)?,
+                b"ping" => {
+                    if msgb.len() >= 4 {
+                        let major = str::from_utf8(&msgb[2])?;
+                        let minor = str::from_utf8(&msgb[3])?;
+                        if major == env!("CARGO_PKG_VERSION_MAJOR")
+                            && minor == env!("CARGO_PKG_VERSION_MINOR")
+                        {
+                            cl_router.send_multipart([exp_id_b, b"pong"], 0)?;
+                            return Ok(ControlFlow::Continue(()));
+                        }
+                    }
+
+                    cl_router.send_multipart(
+                        [exp_id_b, b"pang", env!("CARGO_PKG_VERSION").as_bytes()],
+                        0,
+                    )?;
+                }
                 b"run" => {
                     if exp_id_b.len() != 8 {
                         cl_router.send_multipart([
@@ -137,6 +153,16 @@ pub fn run(once: bool) -> Result<()> {
                             b"error",
                             b"Invalid router identity. Set socket identity to the u64 experiment ID."
                         ], 0)?;
+                        return Ok(ControlFlow::Continue(()));
+                    }
+
+                    if nodes.is_empty() {
+                        cl_router.send_multipart([
+                            exp_id_b,
+                            b"error",
+                            b"No available Squid nodes are connected at this time. Try again later."
+                        ], 0)?;
+                        return Ok(ControlFlow::Continue(()));
                     }
 
                     let exp_id = de_u64(exp_id_b)?;
