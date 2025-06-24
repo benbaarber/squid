@@ -13,20 +13,19 @@ pub fn is_installed() -> io::Result<bool> {
     Ok(result.success())
 }
 
-pub fn build(image: &str, path: &str) -> io::Result<ExitStatus> {
+pub fn build(image: &str, path: &str) -> io::Result<Child> {
     Command::new("docker")
         .args(["build", "--ssh", "default", "-t", image, path])
         .env("DOCKER_BUILDKIT", "1")
-        .spawn()?
-        .wait()
+        .spawn()
 }
 
-pub fn push(image: &str) -> io::Result<ExitStatus> {
-    Command::new("docker").args(["push", image]).spawn()?.wait()
+pub fn push(image: &str) -> io::Result<Child> {
+    Command::new("docker").args(["push", image]).spawn()
 }
 
-pub fn pull(image: &str) -> io::Result<ExitStatus> {
-    Command::new("docker").args(["pull", image]).spawn()?.wait()
+pub fn pull(image: &str) -> io::Result<Child> {
+    Command::new("docker").args(["pull", image]).spawn()
 }
 
 pub fn run(

@@ -5,15 +5,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::util::{NodeStatus, PopEvaluation, blueprint::Blueprint, de_u8, de_u64, de_usize};
+use crate::util::{NodeStatus, PopEvaluation, blueprint::Blueprint, de_u8, de_usize};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{layout::Flex, prelude::*, style::Stylize, text::ToSpan, widgets::*};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tui_logger::TuiLoggerWidget;
 
 #[derive(PartialEq, Eq)]
 pub enum AppState {
+    Pulling,
     Active,
     Done,
     Aborted,
@@ -37,6 +38,7 @@ pub struct App {
     // client state
     state: AppState,
     show_abort: bool,
+    first_node_active: bool,
 }
 
 impl App {
@@ -57,6 +59,7 @@ impl App {
             min_fitness: 0.0,
             state: AppState::Active,
             show_abort: false,
+            first_node_active: false,
         })
     }
 
@@ -87,7 +90,7 @@ impl App {
             let event = event::read()?;
             match event_keycode(&event) {
                 Some(KeyCode::Char('q')) => match self.state {
-                    AppState::Active => {
+                    AppState::Active | AppState::Pulling => {
                         if self.show_abort {
                             ex_sock.send("abort", 0)?;
                             self.end_duration = Some(self.start_time.elapsed());
@@ -145,24 +148,15 @@ impl App {
                         self.agents_done += 1;
                     }
                 }
-                b"node" => {
-                    let nd_id = de_u64(&msgb[1])?;
+                b"node" if !self.first_node_active => {
                     let status_u8 = de_u8(&msgb[2])?;
-                    let Some(status) = NodeStatus::from_repr(status_u8) else {
-                        warn!("🐋 Node {:x} sent an invalid status: {}", nd_id, status_u8);
-                        continue;
-                    };
-                    match status {
-                        NodeStatus::Pulling => {
-                            info!("🐋 Node {:x} is pulling the docker image...", nd_id)
-                        }
-                        NodeStatus::Crashed => warn!("🐋 Node {:x} crashed", nd_id),
-                        NodeStatus::Active => {
-                            info!("🐋 Node {:x} spawned your containers...", nd_id)
-                        }
-                        NodeStatus::Idle => {
-                            info!("🐋 Node {:x} is loafing around...", nd_id)
-                        }
+
+                    if status_u8 == NodeStatus::Pulling as u8 {
+                        self.state = AppState::Pulling;
+                    }
+                    if status_u8 == NodeStatus::Active as u8 {
+                        self.state = AppState::Active;
+                        self.first_node_active = true;
                     }
                 }
                 b"done" => {
@@ -202,6 +196,7 @@ impl WidgetRef for App {
         .areas(header_area);
 
         let state_text = match self.state {
+            AppState::Pulling => "PULLING".blue(),
             AppState::Active => "RUNNING".green(),
             AppState::Done => "FINISHED".light_green(),
             AppState::Aborted => "ABORTED".light_yellow(),
@@ -331,7 +326,7 @@ impl WidgetRef for App {
         Gauge::default()
             .block(section_block("Progress"))
             .gauge_style(match self.state {
-                AppState::Active | AppState::Done => Color::LightYellow,
+                AppState::Active | AppState::Done | AppState::Pulling => Color::LightYellow,
                 AppState::Aborted | AppState::Crashed => Color::DarkGray,
             })
             .ratio(ratio.min(1.0))

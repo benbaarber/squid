@@ -2,6 +2,8 @@ pub mod blueprint;
 pub mod docker;
 pub mod stdout_buffer;
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use strum::FromRepr;
@@ -66,6 +68,19 @@ pub fn de_f64(bytes: &[u8]) -> Result<f64> {
         .try_into()
         .map_err(|_| anyhow!("Invalid slice length for f64 conversion: {}", len))?;
     Ok(f64::from_be_bytes(bytes))
+}
+
+pub fn broadcast_router<T>(
+    map: &HashMap<u64, T>,
+    router: &zmq::Socket,
+    msgb: &[impl Into<zmq::Message> + Clone],
+) -> Result<()> {
+    for id in map.keys() {
+        router.send(id.to_be_bytes().as_slice(), zmq::SNDMORE)?;
+        router.send_multipart(msgb, 0)?;
+    }
+
+    Ok(())
 }
 
 #[macro_export]

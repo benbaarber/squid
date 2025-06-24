@@ -13,13 +13,14 @@ use std::{
 use crate::{
     bail_assert,
     util::{
-        PopEvaluation,
+        NodeStatus, PopEvaluation,
         blueprint::{Blueprint, InitMethod},
-        de_u32, de_usize, docker,
+        de_u8, de_u32, de_u64, de_usize, docker,
     },
 };
 use anyhow::{Context, Result, bail};
 use chrono::Local;
+use log::warn;
 use serde_json::Value;
 use tracing::{debug, error, info};
 
@@ -42,6 +43,8 @@ pub fn run(
         "Invalid Squid project: No `Dockerfile` found in {}",
         path.canonicalize()?.display()
     );
+
+    let local = broker_addr == "localhost";
 
     let ctx = zmq::Context::new();
     let broker_url = format!("tcp://{}:5555", &broker_addr);
@@ -72,13 +75,16 @@ pub fn run(
 
     info!("🐋 Building docker image...");
     let task_image = blueprint.experiment.image.as_str();
-    if !docker::build(task_image, path.to_str().unwrap())?.success() {
+    if !docker::build(task_image, path.to_str().unwrap())?
+        .wait()?
+        .success()
+    {
         // failure message
         bail!("Failed to build docker image");
     }
-    if !task_image.starts_with("docker.io/library/") {
+    if !local && !task_image.starts_with("docker.io/library/") {
         info!("🐋 Pushing docker image...");
-        if !docker::push(&task_image)?.success() {
+        if !docker::push(&task_image)?.wait()?.success() {
             // failure message
             bail!("Failed to push docker image to {}", task_image);
         }
@@ -180,6 +186,7 @@ pub fn run(
                 Ok(ControlFlow::Continue(_)) => continue,
                 Err(e) => {
                     ui_sock.send("crashed", 0)?;
+                    broker_sock.send_multipart(["abort".as_bytes(), &id_b], 0)?;
                     bail!("Exp loop error: {:#}", e);
                 }
             }
@@ -260,7 +267,9 @@ fn exp_loop(
             b"prog" => {
                 ui_sock.send_multipart(&msgb[2..], 0)?;
 
-                if msgb[2] == b"gen" && msgb[4] == b"done" {
+                let prog_type = msgb[2].as_slice();
+
+                if prog_type == b"gen" && msgb[4] == b"done" {
                     let evaluation: PopEvaluation = serde_json::from_slice(&msgb[5])?;
                     let path = out_dir.join("data/fitness.csv");
                     let file = OpenOptions::new().append(true).open(path)?;
@@ -274,6 +283,27 @@ fn exp_loop(
                     //     "Generation finished: Best {} Avg {}",
                     //     evaluation.best_fitness, evaluation.avg_fitness
                     // );
+                }
+
+                if prog_type == b"node" {
+                    let nd_id = de_u64(&msgb[3])?;
+                    let status_u8 = de_u8(&msgb[4])?;
+                    let Some(status) = NodeStatus::from_repr(status_u8) else {
+                        warn!("🐋 Node {:x} sent an invalid status: {}", nd_id, status_u8);
+                        continue;
+                    };
+                    match status {
+                        NodeStatus::Pulling => {
+                            info!("🐋 Node {:x} is pulling the docker image...", nd_id)
+                        }
+                        NodeStatus::Crashed => warn!("🐋 Node {:x} crashed", nd_id),
+                        NodeStatus::Active => {
+                            info!("🐋 Node {:x} is running your container...", nd_id)
+                        }
+                        NodeStatus::Idle => {
+                            info!("🐋 Node {:x} is loafing around...", nd_id)
+                        }
+                    }
                 }
             }
             b"save" => {

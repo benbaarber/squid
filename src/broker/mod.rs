@@ -6,7 +6,7 @@ use crate::{
     util::{
         NodeStatus,
         blueprint::{Blueprint, NN},
-        de_f64, de_u32, de_u64, de_usize,
+        broadcast_router, de_f64, de_u32, de_u64, de_usize,
     },
 };
 use anyhow::{Context, Result, bail};
@@ -22,7 +22,7 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
-use tracing::{debug, error, error_span, info, warn};
+use tracing::{debug, error, error_span, info, trace, warn};
 
 /// Squid node process
 #[derive(Debug)]
@@ -230,9 +230,13 @@ pub fn run(once: bool) -> Result<()> {
                 }
                 b"status" => {
                     let exp_id_b = msgb[2].as_slice();
-                    let status = msgb[3].as_slice();
+                    let status_b = msgb[3].as_slice();
 
-                    ex_router.send_multipart([exp_id_b, b"ndstatus", ndid_b, status], 0)?;
+                    if let Some(status) = NodeStatus::from_repr(status_b[0]) {
+                        nodes.entry(ndid).and_modify(|nd| nd._status = status);
+                    }
+
+                    ex_router.send_multipart([exp_id_b, b"ndstatus", ndid_b, status_b], 0)?;
                 }
                 _ => (),
             }
@@ -351,8 +355,8 @@ fn experiment(
         const SV_HB_INTERVAL: Duration = Duration::from_secs(1);
         const SV_TTL: Duration = Duration::from_secs(5);
         const SV_GRACE: Duration = Duration::from_secs(5);
-        // TODO: not sure this is the best approach
-        let mut last_sv_hb_out = Instant::now().checked_add(SV_GRACE).unwrap();
+        let mut last_sv_hb_out = Instant::now();
+        let mut started = false; // prevent aborting before nodes pull docker images
 
         let mut sockets = [
             cl_dealer.as_poll_item(zmq::POLLIN),
@@ -413,36 +417,39 @@ fn experiment(
                 }
             }
 
-            let mut c = 0;
+            let mut c = 0u32;
             while completed_sims < config.population_size {
-                debug!("gen {} iteration {}", gen_num, c);
-                c += 1;
+                trace!("gen {} iteration {}", gen_num, {
+                    let tmp = c;
+                    c += 1;
+                    tmp
+                });
                 if last_sv_hb_out.elapsed() > SV_HB_INTERVAL {
                     supervisors.retain(|id, sv| {
-                    if sv.worker_ids.len() == 0 {
-                        warn!(
-                            "⛓️‍💥 All workers of supervisor {:x} have died. Terminating supervisor.",
-                            id
-                        );
-                        sv_router
-                            .send_multipart([id.to_be_bytes().as_slice(), b"stop"], 0)
-                            .unwrap();
-                        return false;
-                    }
-                    let elapsed = sv.last_pulse.elapsed();
-                    if elapsed < SV_HB_INTERVAL {
-                        true
-                    } else if elapsed > SV_TTL {
-                        warn!("⛓️‍💥 Lost supervisor {:x}", id);
-                        false
-                    } else {
-                        sv_router
-                            .send_multipart([id.to_be_bytes().as_slice(), b"hb"], 0)
-                            .unwrap();
-                        true
-                    }
-                });
-                    if supervisors.len() == 0 {
+                        if sv.worker_ids.len() == 0 {
+                            warn!(
+                                "⛓️‍💥 All workers of supervisor {:x} have died. Terminating supervisor.",
+                                id
+                            );
+                            sv_router
+                                .send_multipart([id.to_be_bytes().as_slice(), b"stop"], 0)
+                                .unwrap();
+                            return false;
+                        }
+                        let elapsed = sv.last_pulse.elapsed();
+                        if elapsed < SV_HB_INTERVAL {
+                            true
+                        } else if elapsed > SV_TTL {
+                            warn!("⛓️‍💥 Lost supervisor {:x}", id);
+                            false
+                        } else {
+                            sv_router
+                                .send_multipart([id.to_be_bytes().as_slice(), b"hb"], 0)
+                                .unwrap();
+                            true
+                        }
+                    });
+                    if supervisors.len() == 0 && started {
                         bail!("All workers died. Aborting experiment.");
                     }
                     last_sv_hb_out = Instant::now();
@@ -581,7 +588,6 @@ fn experiment(
                         supervisors.insert(
                             sv_id,
                             Supervisor {
-                                // TODO: dont hardcode supervisor duration
                                 last_pulse: Instant::now().checked_add(SV_GRACE).unwrap(),
                                 worker_ids: wk_ids,
                             },
@@ -646,6 +652,13 @@ fn experiment(
                         b"ndstatus" => {
                             let nd_id_b = msgb[1].as_slice();
                             let status_b = msgb[2].as_slice();
+
+                            if !started && status_b[0] == NodeStatus::Active as u8 {
+                                debug!("First container spawned");
+                                started = true;
+                                last_sv_hb_out = Instant::now() + SV_GRACE;
+                            }
+
                             cl_dealer.send_multipart(
                                 ["prog".as_bytes(), &exp_id_b, b"node", nd_id_b, status_b],
                                 0,
@@ -668,11 +681,9 @@ fn experiment(
                     ],
                     0,
                 )?;
-                debug!("request sent");
 
                 while wk_router.poll(zmq::POLLIN, 5000)? > 0 {
                     let msgb = wk_router.recv_multipart(0)?;
-                    debug!("message received");
 
                     if msgb[1] != exp_id_b {
                         continue;
@@ -698,8 +709,6 @@ fn experiment(
                     }
                 }
             }
-
-            debug!("Received csv data");
 
             let evaluation = population.evaluate();
             cl_dealer.send_multipart(
@@ -744,19 +753,6 @@ fn experiment(
     broadcast_router(&supervisors, &sv_router, &["stop".as_bytes()])?;
 
     info!("🧪 Finished experiment {}", &exp_id_x);
-
-    Ok(())
-}
-
-fn broadcast_router<T>(
-    map: &HashMap<u64, T>,
-    router: &zmq::Socket,
-    msgb: &[impl Into<zmq::Message> + Clone],
-) -> Result<()> {
-    for id in map.keys() {
-        router.send(id.to_be_bytes().as_slice(), zmq::SNDMORE)?;
-        router.send_multipart(msgb, 0)?;
-    }
 
     Ok(())
 }
