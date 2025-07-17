@@ -39,7 +39,7 @@ crossover_probability = 0.5 # probability each child of the next generation will
 # `{ type = "Uniform" }` - each parameter has an independent and equal probability of coming from either parent
 # `{ type = "NPoint", n = int }` - n-point crossover
 crossover_method = { type = "Uniform" }
-save_every = 10 # save best agents periodically after this many generations
+save_every = 10 # save best agents periodically after this many generations, set to 0 to only save the final generation
 save_fraction = 0.1 # % of sorted population to save
 
 # Format of experimental data to save. Squid worker implementation must match this format.

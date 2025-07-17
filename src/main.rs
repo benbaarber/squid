@@ -239,7 +239,7 @@ fn main() -> Result<()> {
         Commands::Validate { blueprint: bpath } => {
             let blueprint_s = fs::read_to_string(&bpath)
                 .with_context(|| format!("Failed to open blueprint file `{}`", bpath.display()))?;
-            let blueprint: Blueprint = toml::from_str(&blueprint_s)
+            let mut blueprint: Blueprint = toml::from_str(&blueprint_s)
                 .with_context(|| format!("Failed to parse blueprint file `{}`", bpath.display()))?;
             blueprint.validate()?;
             println!("✅ Blueprint `{}` is valid", bpath.display());

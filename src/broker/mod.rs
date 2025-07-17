@@ -774,7 +774,7 @@ fn experiment(
     cl_dealer.send_multipart(["save".as_bytes(), &exp_id_b, b"population", &agents], 0)?;
     cl_dealer.send_multipart(["done".as_bytes(), &exp_id_b], 0)?;
 
-    info!("killing workers and supervisors");
+    debug!("Killing workers and supervisors");
     broadcast_router(&workers, &wk_router, &["kill".as_bytes()])?;
     broadcast_router(&supervisors, &sv_router, &["stop".as_bytes()])?;
 

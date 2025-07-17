@@ -72,7 +72,7 @@ pub struct Blueprint {
 }
 
 impl Blueprint {
-    pub fn validate(&self) -> Result<()> {
+    pub fn validate(&mut self) -> Result<()> {
         // NN
 
         // min param length to be upper bound for n-point crossover
@@ -120,10 +120,6 @@ impl Blueprint {
             "ga.mutation_probability must be between 0 and 1"
         );
         bail_assert!(
-            self.ga.mutation_magnitude >= 0.0,
-            "ga.mutation_magnitude must be non-negative"
-        );
-        bail_assert!(
             self.ga.selection_fraction >= 0.0 && self.ga.selection_fraction <= 1.0,
             "ga.selection_fraction must be between 0 and 1"
         );
@@ -150,10 +146,9 @@ impl Blueprint {
             self.ga.save_fraction >= 0.0 && self.ga.save_fraction <= 1.0,
             "ga.save_fraction must be between 0 and 1"
         );
-        bail_assert!(
-            self.ga.save_every <= self.ga.num_generations,
-            "ga.save_every must be less than or equal to ga.num_generations"
-        );
+        if self.ga.save_every == 0 {
+            self.ga.save_every = usize::MAX;
+        }
 
         Ok(())
     }
