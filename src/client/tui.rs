@@ -93,7 +93,7 @@ impl App {
                     AppState::Active | AppState::Pulling => {
                         if self.show_abort {
                             ex_sock.send("abort", 0)?;
-                            self.end_duration = Some(self.start_time.elapsed());
+                            self.end_timer();
                             self.state = AppState::Aborted;
                             info!("Aborted experiment. Press Q again to exit.")
                         }
@@ -160,11 +160,11 @@ impl App {
                     }
                 }
                 b"done" => {
-                    self.end_duration = Some(self.start_time.elapsed());
+                    self.end_timer();
                     self.state = AppState::Done;
                 }
                 b"crashed" => {
-                    self.end_duration = Some(self.start_time.elapsed());
+                    self.end_timer();
                     self.state = AppState::Crashed;
                 }
                 _ => continue,
@@ -174,6 +174,12 @@ impl App {
         terminal.draw(|frame| frame.render_widget(&*self, frame.area()))?;
 
         Ok(ControlFlow::Continue(()))
+    }
+
+    fn end_timer(&mut self) {
+        let elapsed = self.start_time.elapsed();
+        self.end_duration = Some(elapsed);
+        info!("Experiment time: {}", format_duration(elapsed));
     }
 }
 
