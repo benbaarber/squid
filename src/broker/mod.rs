@@ -377,7 +377,7 @@ fn experiment(
 
     let config = blueprint.ga;
 
-    let mut experiment_main_loop = || -> Result<ControlFlow<()>> {
+    let mut experiment_main_loop = || -> Result<ControlFlow<(), String>> {
         const SV_HB_INTERVAL: Duration = Duration::from_secs(1);
         const SV_TTL: Duration = Duration::from_secs(5);
         const SV_GRACE: Duration = Duration::from_secs(5);
@@ -749,6 +749,13 @@ fn experiment(
                 0,
             )?;
 
+            if let Some(f) = config.fitness_threshold
+                && evaluation.best_fitness >= f
+            {
+                debug!("Population reached fitness threshold. Ending experiment.");
+                return Ok(ControlFlow::Continue("threshold".to_string()));
+            }
+
             if gen_num % config.save_every == 0 {
                 let agents = population.pack_save()?;
                 cl_dealer
@@ -758,21 +765,21 @@ fn experiment(
             population.evolve()?;
         }
 
-        Ok(ControlFlow::Continue(()))
+        Ok(ControlFlow::Continue("".to_string()))
     };
 
-    match experiment_main_loop() {
-        Ok(ControlFlow::Continue(_)) => (),
+    let reason = match experiment_main_loop() {
+        Ok(ControlFlow::Continue(reason)) => reason,
         Ok(ControlFlow::Break(_)) => return Ok(()),
         Err(e) => {
             bk_dealer.send("ndabort", 0)?;
             return Err(e);
         }
-    }
+    };
 
     let agents = population.pack_save()?;
     cl_dealer.send_multipart(["save".as_bytes(), &exp_id_b, b"population", &agents], 0)?;
-    cl_dealer.send_multipart(["done".as_bytes(), &exp_id_b], 0)?;
+    cl_dealer.send_multipart(["done".as_bytes(), &exp_id_b, reason.as_bytes()], 0)?;
 
     debug!("Killing workers and supervisors");
     broadcast_router(&workers, &wk_router, &["kill".as_bytes()])?;

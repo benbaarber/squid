@@ -31,7 +31,7 @@
 - save (id: `u64`)
   - population (agents: `Vec<json>`)
   - data (gen: `u32`) (data: `json`)
-- done (id: `u64`)
+- done (id: `u64`) (reason: `str`)
 - error (fatal: `bool`) (message: `str`)
 
 ### Broker -> Node

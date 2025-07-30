@@ -68,6 +68,7 @@ pub fn run(
         blueprint.ga.num_generations = 1;
         blueprint.ga.population_size = t;
         blueprint.ga.save_fraction = 1.0;
+        blueprint.ga.fitness_threshold = None;
     }
     let blueprint_s = toml::to_string(&blueprint)?;
 
@@ -351,6 +352,10 @@ fn exp_loop(
                 }
             }
             b"done" => {
+                let reason = &msgb[2];
+                if reason == b"threshold" {
+                    info!("Population reached fitness threshold. Ending experiment.");
+                }
                 ui_sock.send("done", 0)?;
                 return Ok(ControlFlow::Break(()));
             }
