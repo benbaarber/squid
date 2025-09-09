@@ -2,8 +2,7 @@
 
 # The tag of the docker image for this experiment. If it begins with
 # `docker.io/library/`, it will not be pushed to the container registry, and
-# only built and used locally. Otherwise, it should take the form
-# `registry.gitlab.com/vivumcomputing/path/to/repository/and_optional_name:tag`.
+# only built and used locally.
 image = "docker.io/library/squid-task-example"
 
 # Agent parameter json files and experiment results will be saved here. Path is
