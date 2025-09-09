@@ -3,7 +3,7 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 use rand_distr::{Bernoulli, Distribution, StandardNormal, Uniform};
 use serde::{Deserialize, Serialize};
 
-use crate::util::blueprint::{CrossoverMethod, NN};
+use crate::blueprint::{CrossoverMethod, NN};
 
 pub trait Species: Clone + Send + TryFrom<NN> + Serialize {
     type Genome: Genome<Species = Self>;

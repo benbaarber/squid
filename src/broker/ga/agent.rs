@@ -1,4 +1,4 @@
-use crate::util::blueprint::CrossoverMethod;
+use crate::blueprint::CrossoverMethod;
 
 use super::genome::Genome;
 

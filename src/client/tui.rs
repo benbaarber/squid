@@ -2,10 +2,11 @@ use core::str;
 use std::{
     io::{self},
     ops::ControlFlow,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
-use crate::util::{NodeStatus, PopEvaluation, blueprint::Blueprint, de_u8, de_usize};
+use crate::{NodeStatus, PopEvaluation, client::Experiment, de_u8, de_usize};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{layout::Flex, prelude::*, style::Stylize, text::ToSpan, widgets::*};
@@ -23,7 +24,7 @@ pub enum AppState {
 
 pub struct App {
     // exp data
-    experiment_id: u64,
+    experiment: Arc<Experiment>,
     start_time: Instant,
     end_duration: Option<Duration>,
     // exp state
@@ -38,19 +39,21 @@ pub struct App {
     // client state
     state: AppState,
     show_abort: bool,
+    show_detach: bool,
     first_node_active: bool,
 }
 
 impl App {
-    pub fn new(blueprint: &Blueprint, experiment_id: u64) -> io::Result<Self> {
-        let population_size = blueprint.ga.population_size;
+    pub fn new(experiment: Arc<Experiment>) -> io::Result<Self> {
+        let population_size = experiment.blueprint.ga.population_size;
+        let num_gens = experiment.blueprint.ga.num_generations;
 
         Ok(Self {
-            experiment_id,
+            experiment,
             start_time: Instant::now(),
             end_duration: None,
             cur_gen: 1,
-            num_gens: blueprint.ga.num_generations,
+            num_gens,
             agents_done: 0,
             population_size,
             avg_fitnesses: Vec::with_capacity(population_size),
@@ -59,6 +62,7 @@ impl App {
             min_fitness: 0.0,
             state: AppState::Active,
             show_abort: false,
+            show_detach: false,
             first_node_active: false,
         })
     }
@@ -89,6 +93,14 @@ impl App {
         if event::poll(Duration::from_millis(100))? {
             let event = event::read()?;
             match event_keycode(&event) {
+                Some(KeyCode::Esc) => {
+                    if self.show_abort {
+                        self.show_abort = false;
+                    }
+                    if self.show_detach {
+                        self.show_detach = false;
+                    }
+                }
                 Some(KeyCode::Char('q')) => match self.state {
                     AppState::Active | AppState::Pulling => {
                         if self.show_abort {
@@ -97,17 +109,26 @@ impl App {
                             self.state = AppState::Aborted;
                             info!("Aborted experiment. Press Q again to exit.")
                         }
-                        self.show_abort ^= true;
+                        self.show_abort = !self.show_abort;
                     }
                     _ => {
                         return Ok(ControlFlow::Break(()));
                     }
                 },
-                Some(KeyCode::Esc) => {
-                    if self.show_abort {
-                        self.show_abort = false;
+                Some(KeyCode::Char('d')) if !self.experiment.is_local => match self.state {
+                    AppState::Active | AppState::Pulling => {
+                        if self.show_detach {
+                            ex_sock.send("detach", 0)?;
+                            info!(
+                                "Detached from experiment {} running on remote broker ({})",
+                                self.experiment.id, &self.experiment.url
+                            );
+                            return Ok(ControlFlow::Break(()));
+                        }
+                        self.show_detach = !self.show_detach;
                     }
-                }
+                    _ => (),
+                },
                 // KeyCode::Char('h') => {
                 //     self.show_help ^= true;
                 // }
@@ -226,14 +247,22 @@ impl WidgetRef for App {
             .block(Block::new().padding(Padding::uniform(1)))
             .render(title_area, buf);
 
-        Paragraph::new(Line::from(vec![
-            "Press ".to_span(),
-            "Q".bold(),
-            " to quit".to_span(),
-        ]))
-        .right_aligned()
-        .block(Block::new().padding(Padding::uniform(1)))
-        .render(help_area, buf);
+        let help_text = if self.experiment.is_local {
+            vec!["Q".bold(), " = quit".to_span()]
+        } else {
+            vec![
+                "D".bold(),
+                " = detach".to_span(),
+                " | ".to_span(),
+                "Q".bold(),
+                " = quit".to_span(),
+            ]
+        };
+
+        Paragraph::new(Line::from(help_text))
+            .right_aligned()
+            .block(Block::new().padding(Padding::uniform(1)))
+            .render(help_area, buf);
 
         // Main
         let [other_area, chart_area] =
@@ -243,7 +272,7 @@ impl WidgetRef for App {
 
         // Info
         let lines = vec![
-            info_line("Experiment ID : ", format!("{:x}", self.experiment_id)),
+            info_line("Experiment ID : ", format!("{:x}", self.experiment.id)),
             info_line(
                 "Generation    : ",
                 format!("{} / {}", self.cur_gen, self.num_gens),
@@ -341,17 +370,19 @@ impl WidgetRef for App {
 
         // Abort confirmation popup
         if self.show_abort {
-            let confirmation_text = "Quitting now will abort the experiment";
-            let vertical = Layout::vertical([Constraint::Length(7)]).flex(Flex::Center);
+            let lines = vec![
+                Line::from("Quitting now will abort the experiment.")
+                    .white()
+                    .bold(),
+                "".into(),
+                Line::from("q to abort / esc to cancel").white(),
+            ];
+
+            let height = 4 + lines.len() as u16;
+            let vertical = Layout::vertical([Constraint::Length(height)]).flex(Flex::Center);
             let horizontal = Layout::horizontal([Constraint::Length(60)]).flex(Flex::Center);
             let [area] = vertical.areas(area);
             let [area] = horizontal.areas(area);
-
-            let lines = vec![
-                Line::from(confirmation_text).white().bold(),
-                "".into(),
-                Line::from("q to confirm / esc to cancel").white(),
-            ];
 
             Clear.render(area, buf);
             Paragraph::new(lines)
@@ -361,6 +392,34 @@ impl WidgetRef for App {
                         .padding(Padding::proportional(1))
                         .red()
                         .title(Line::from("WARNING").light_red().bold().centered()),
+                )
+                .centered()
+                .render(area, buf);
+        }
+
+        // Detach confirmation popup
+        if self.show_detach {
+            let lines = vec![
+                Line::from("The experiment will continue to run on the remote broker.").white(),
+                Line::from("Use `squid attach` to reattach to this experiment.").white(),
+                "".into(),
+                Line::from("d to detach / esc to cancel").white(),
+            ];
+
+            let height = 4 + lines.len() as u16;
+            let vertical = Layout::vertical([Constraint::Length(height)]).flex(Flex::Center);
+            let horizontal = Layout::horizontal([Constraint::Length(70)]).flex(Flex::Center);
+            let [area] = vertical.areas(area);
+            let [area] = horizontal.areas(area);
+
+            Clear.render(area, buf);
+            Paragraph::new(lines)
+                .block(
+                    Block::bordered()
+                        .border_type(BorderType::Double)
+                        .padding(Padding::proportional(1))
+                        .blue()
+                        .title(Line::from("Detaching").light_blue().bold().centered()),
                 )
                 .centered()
                 .render(area, buf);
@@ -379,7 +438,7 @@ fn event_keycode(event: &Event) -> Option<KeyCode> {
     Some(key.code)
 }
 
-fn section_block(title: &str) -> Block {
+fn section_block(title: &str) -> Block<'_> {
     Block::bordered()
         .border_type(BorderType::Rounded)
         .title(Line::from(title).centered())
@@ -501,7 +560,7 @@ impl LogFormatter for LogSquidFormatter {
     fn min_width(&self) -> u16 {
         9 + 4
     }
-    fn format(&self, width: usize, evt: &ExtLogRecord) -> Vec<Line> {
+    fn format(&self, width: usize, evt: &ExtLogRecord) -> Vec<Line<'_>> {
         let mut lines = Vec::new();
         let mut output = String::new();
         let (col_style, lev_long, lev_abbr, with_loc) = match evt.level {

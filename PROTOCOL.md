@@ -4,12 +4,16 @@
 
 - ping (major: `str`) (minor: `str`)
 - run (id: `u64`) (blueprint: `Blueprint`) (seeds: `Vec<Species>`)
+- attach (id: `u64`)
+- fetch (id: `u64`)
 
 ### Broker -> Client
 
 - pong
 - pang (version: `str`)
 - redirect (port: `u32`)
+- reattach (port: `u32`) (blueprint: `Blueprint bincode`)
+- zft (port: `u32`)
 - error (message: `str`)
 
 ### Client -> Experiment Thread
@@ -109,3 +113,5 @@
 - (5600 + (n \* 3) + 1) - thread n (router) <- worker (dealer)
 - (5600 + (n \* 3) + 2) - thread n (router) <- supervisor (dealer)
   for n in [0, 32]
+
+5700-5710 reserved for ZFT

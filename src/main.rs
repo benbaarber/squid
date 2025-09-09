@@ -1,17 +1,10 @@
-mod broker;
-mod client;
-mod node;
-mod util;
-
 use core::str;
 use std::{fs, path::PathBuf, thread};
 
-use crate::util::blueprint::Blueprint;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use squid::{bail_assert, blueprint::Blueprint, broker, client, env, node};
 use tracing::{error_span, level_filters::LevelFilter};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use util::{env, stdout_buffer::StdoutBuffer};
 
 #[derive(Parser)]
 #[clap(version)]
@@ -49,6 +42,27 @@ enum Commands {
         /// Do not run the TUI (terminal user interface)
         #[arg(long)]
         no_tui: bool,
+    },
+    Attach {
+        /// Experiment ID
+        id: String,
+        /// Broker address (e.g. 192.168.0.42)
+        #[arg(short, long)]
+        broker_addr: Option<String>,
+        /// Parent directory to dump experiment directory in
+        #[arg(short, long, default_value = ".")]
+        out: PathBuf,
+    },
+    /// Fetch experimental data from the broker by experiment ID
+    Fetch {
+        /// Experiment ID
+        id: String,
+        /// Broker address (e.g. 192.168.0.42)
+        #[arg(short, long)]
+        broker_addr: Option<String>,
+        /// Parent directory to dump experiment directory in
+        #[arg(short, long, default_value = ".")]
+        out: PathBuf,
     },
     /// Run the squid broker
     Broker {
@@ -141,30 +155,11 @@ fn main() -> Result<()> {
 
             // Setup logging
             let mut stdout_buffer = None;
-            let filter =
-                tracing_subscriber::filter::Targets::new().with_target("squid::client", log_level);
             if test {
-                tracing_subscriber::fmt()
-                    .with_max_level(log_level)
-                    .with_target(false)
-                    .init();
-            } else if no_tui {
-                tracing_subscriber::registry()
-                    .with(tracing_subscriber::fmt::layer().with_target(false))
-                    .with(filter)
-                    .init();
+                logpreset::system(log_level);
             } else {
-                stdout_buffer = Some(StdoutBuffer::new());
-                tracing_subscriber::registry()
-                    .with(
-                        tracing_subscriber::fmt::layer()
-                            .with_target(false)
-                            .with_writer(stdout_buffer.clone().unwrap()),
-                    )
-                    .with(tui_logger::TuiTracingSubscriberLayer)
-                    .with(filter)
-                    .init();
-                tui_logger::init_logger(tui_logger::LevelFilter::Info).unwrap();
+                let sb = logpreset::tui(log_level);
+                stdout_buffer = Some(sb);
             }
 
             let broker_addr = if test || local {
@@ -185,7 +180,7 @@ fn main() -> Result<()> {
                         .in_scope(|| node::run(broker_url_clone, num_threads, true, true))
                 });
                 let success =
-                    client::run(&path, broker_addr, Some(num_threads.unwrap_or(1)), false)?;
+                    client::run(path, broker_addr, Some(num_threads.unwrap_or(1)), false)?;
                 broker_thread.join().unwrap()?;
                 node_thread.join().unwrap()?;
 
@@ -199,22 +194,37 @@ fn main() -> Result<()> {
                 let broker_url_clone = broker_addr.clone();
                 let node_thread =
                     thread::spawn(move || node::run(broker_url_clone, num_threads, true, false));
-                client::run(&path, broker_addr, None, !no_tui)?;
+                client::run(path, broker_addr, None, !no_tui)?;
                 broker_thread.join().unwrap()?;
                 node_thread.join().unwrap()?;
             } else {
-                client::run(&path, broker_addr, None, !no_tui)?;
+                client::run(path, broker_addr, None, !no_tui)?;
             }
 
             if let Some(buf) = stdout_buffer {
                 buf.flush()?;
             }
         }
+        Commands::Attach {
+            id,
+            broker_addr,
+            out,
+        } => {
+            logpreset::tui(log_level);
+            let broker_addr = unpack_broker_addr(broker_addr)?;
+            client::attach(broker_addr, id, &out, true)?;
+        }
+        Commands::Fetch {
+            id,
+            out,
+            broker_addr,
+        } => {
+            logpreset::user(log_level);
+            let broker_addr = unpack_broker_addr(broker_addr)?;
+            client::fetch(broker_addr, id, &out)?;
+        }
         Commands::Broker { once } => {
-            tracing_subscriber::fmt()
-                .with_target(false)
-                .with_max_level(log_level)
-                .init();
+            logpreset::system(log_level);
             broker::run(once)?;
         }
         Commands::Node {
@@ -222,17 +232,11 @@ fn main() -> Result<()> {
             num_threads,
             local,
         } => {
-            tracing_subscriber::fmt()
-                .with_target(false)
-                .with_max_level(log_level)
-                .init();
+            logpreset::system(log_level);
             let broker_addr = if local {
                 "localhost".to_string()
             } else {
-                match broker_addr {
-                    Some(x) => x,
-                    None => env("SQUID_BROKER_ADDR").map_err(|_| anyhow::Error::msg("Broker address not set. Use cli argument `-b`/`--broker-addr` or set $SQUID_BROKER_ADDR env variable."))?
-                }
+                unpack_broker_addr(broker_addr)?
             };
             node::run(broker_addr, num_threads, local, false)?;
         }
@@ -247,4 +251,65 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn unpack_broker_addr(broker_addr: Option<String>) -> Result<String> {
+    match broker_addr {
+        Some(x) => Ok(x),
+        None => env("SQUID_BROKER_ADDR").map_err(|_| anyhow::Error::msg("Broker address not set. Use cli argument `-b`/`--broker-addr` or set $SQUID_BROKER_ADDR env variable.")),
+    }
+}
+
+mod logpreset {
+    use squid::stdout_buffer::StdoutBuffer;
+    use tracing::level_filters::LevelFilter;
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+    /// Minimal user level logging (just the log, looks like println)
+    pub fn user(log_level: LevelFilter) {
+        tracing_subscriber::fmt()
+            .with_max_level(log_level)
+            .with_target(false)
+            .without_time()
+            .with_level(false)
+            .init();
+    }
+
+    /// System level logging (with timestamp and log level)
+    pub fn system(log_level: LevelFilter) {
+        tracing_subscriber::fmt()
+            .with_max_level(log_level)
+            .with_target(false)
+            .init();
+    }
+
+    /// Client logging with TUI
+    pub fn tui(log_level: LevelFilter) -> StdoutBuffer {
+        let filter =
+            tracing_subscriber::filter::Targets::new().with_target("squid::client", log_level);
+        let stdout_buffer = StdoutBuffer::new();
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_target(false)
+                    .with_writer(stdout_buffer.clone()),
+            )
+            .with(tui_logger::TuiTracingSubscriberLayer)
+            .with(filter)
+            .init();
+        tui_logger::init_logger(level_filter_to_tui_level_filter(log_level)).unwrap();
+        stdout_buffer
+    }
+
+    // irritating
+    fn level_filter_to_tui_level_filter(lf: LevelFilter) -> tui_logger::LevelFilter {
+        match lf {
+            LevelFilter::ERROR => tui_logger::LevelFilter::Error,
+            LevelFilter::WARN => tui_logger::LevelFilter::Warn,
+            LevelFilter::INFO => tui_logger::LevelFilter::Info,
+            LevelFilter::DEBUG => tui_logger::LevelFilter::Debug,
+            LevelFilter::TRACE => tui_logger::LevelFilter::Trace,
+            LevelFilter::OFF => tui_logger::LevelFilter::Off,
+        }
+    }
 }

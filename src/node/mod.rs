@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::util::{NodeStatus, broadcast_router, de_u32, de_u64, docker};
+use crate::{NodeStatus, broadcast_router, de_u32, de_u64, docker};
 use anyhow::{Result, bail};
 use tracing::{debug, error, info, warn};
 

@@ -1,8 +1,7 @@
+use crate::blueprint::SelectionMethod;
 use anyhow::{Result, bail};
 use rand::{Rng, seq::IndexedRandom};
 use rand_distr::{Distribution, Uniform, weighted::WeightedIndex};
-
-use crate::util::blueprint::SelectionMethod;
 
 use super::agent::Agent;
 

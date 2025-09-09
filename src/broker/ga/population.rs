@@ -1,4 +1,4 @@
-use crate::util::{
+use crate::{
     PopEvaluation,
     blueprint::{GAConfig, InitMethod},
 };
