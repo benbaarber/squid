@@ -1,9 +1,9 @@
 mod ga;
 
 use crate::{
-    NodeStatus, bincode_serialize,
+    AtomicBoolRelaxed, ExpHistory, NodeStatus,
     blueprint::{Blueprint, NN},
-    broadcast_router, de_f64, de_u32, de_u64, de_usize, env, zft,
+    broadcast_router, create_exp_dir, de_f64, de_u32, de_u64, de_usize, env, zft,
 };
 use anyhow::{Context, Result, bail};
 use core::str;
@@ -16,10 +16,10 @@ use std::{
     collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
     ops::ControlFlow,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::{Duration, Instant, UNIX_EPOCH},
 };
 use tracing::{debug, error, error_span, info, trace, warn};
 
@@ -37,6 +37,7 @@ struct ExpThread {
     port_reg_ix: usize,
     handle: JoinHandle<Result<()>>,
     blueprint: Arc<Blueprint>,
+    client_connected: Arc<AtomicBoolRelaxed>,
 }
 
 /// Squid supervisor process
@@ -52,13 +53,16 @@ struct Worker {
     agent_ix: Option<usize>,
 }
 
+pub fn get_squid_exp_path() -> Result<PathBuf> {
+    let home_path = env("HOME")?;
+    let squid_path = Path::new(&home_path).join(".local/share/squid/experiments");
+    Ok(squid_path)
+}
+
 pub fn run(once: bool) -> Result<()> {
     info!("🦑 Broker v{} starting up...", env!("CARGO_PKG_VERSION"));
 
-    let home_path = env("HOME")?;
-    let squid_path_buf = Path::new(&home_path).join(".local/share/squid");
-    let squid_path = &squid_path_buf;
-    let squid_exp_dir = squid_path.join("experiments");
+    let squid_exp_dir = get_squid_exp_path()?;
     fs::create_dir_all(&squid_exp_dir)?;
 
     let mut nodes = HashMap::<u64, Node>::new();
@@ -212,11 +216,15 @@ pub fn run(once: bool) -> Result<()> {
                         .context("Failed to deserialize blueprint toml string")?;
                     let blueprint = Arc::new(blueprint);
 
+                    let client_connected = Arc::new(AtomicBoolRelaxed::new(true));
+
                     let ctx_clone = ctx.clone();
-                    let exp_id_x = format!("{:x}", exp_id >> 32);
-                    let exp_span = error_span!("experiment", id = &exp_id_x);
-                    let squid_path = squid_path.clone();
+                    let exp_id_x = format!("{:x}", exp_id);
+                    let exp_id_x_short = format!("{:x}", exp_id >> 32);
+                    let exp_span = error_span!("experiment", id = &exp_id_x_short);
+                    let squid_path = squid_exp_dir.clone();
                     let blueprint_clone = Arc::clone(&blueprint);
+                    let client_connected_clone = Arc::clone(&client_connected);
                     let handle = thread::spawn(move || {
                         let _guard = exp_span.enter();
                         let ctx = ctx_clone;
@@ -236,6 +244,7 @@ pub fn run(once: bool) -> Result<()> {
                             &msgb[4],
                             &squid_path,
                             once,
+                            client_connected_clone,
                         ) {
                             let err = e.to_string();
                             error!("{}", &e);
@@ -254,6 +263,7 @@ pub fn run(once: bool) -> Result<()> {
                             port_reg_ix: ix,
                             handle,
                             blueprint,
+                            client_connected,
                         },
                     );
 
@@ -280,8 +290,20 @@ pub fn run(once: bool) -> Result<()> {
                         return Ok(ControlFlow::Continue(()));
                     };
 
+                    if exp_thread.client_connected.load() {
+                        cl_router.send_multipart(
+                            [
+                                clid_b,
+                                b"error",
+                                b"A client is already connected to this experiment.",
+                            ],
+                            0,
+                        )?;
+                        return Ok(ControlFlow::Continue(()));
+                    }
+
                     let port = 5600 + (exp_thread.port_reg_ix * 3);
-                    let blueprint_b = bincode_serialize(&*exp_thread.blueprint)?;
+                    let blueprint_b = rmp_serde::to_vec(&*exp_thread.blueprint)?;
                     cl_router.send_multipart(
                         [
                             clid_b,
@@ -300,7 +322,14 @@ pub fn run(once: bool) -> Result<()> {
 
                     let exp_dir = squid_exp_dir.join(exp_id_x);
                     if !exp_dir.exists() {
-                        cl_router.send_multipart([clid_b, b"error", b"noexist"], 0)?;
+                        cl_router.send_multipart(
+                            [
+                                clid_b,
+                                b"error",
+                                b"No directory for that experiment ID exists.",
+                            ],
+                            0,
+                        )?;
                         return Ok(ControlFlow::Continue(()));
                     }
 
@@ -420,10 +449,17 @@ fn experiment(
     port: usize,
     blueprint: &Blueprint,
     seeds_b: &[u8],
-    squid_path: &Path,
+    squid_exp_path: &Path,
     once: bool,
+    client_connected: Arc<AtomicBoolRelaxed>,
 ) -> Result<()> {
     let exp_id_b = exp_id.to_be_bytes();
+
+    let mut history = ExpHistory {
+        start: UNIX_EPOCH.elapsed()?.as_secs(),
+        best_fitness_vec: Vec::with_capacity(blueprint.ga.num_generations),
+        avg_fitness_vec: Vec::with_capacity(blueprint.ga.num_generations),
+    };
 
     let bk_dealer = ctx.socket(zmq::DEALER)?;
     bk_dealer.set_identity(&exp_id_b)?;
@@ -447,35 +483,15 @@ fn experiment(
         );
     }
 
-    // Deserialize blueprint and population
+    // Deserialize seeds and population
     let seeds: Vec<Vec<u8>> = serde_json::from_slice(seeds_b)
         .context("Failed to deserialize seeds binary into Vec<Vec<u8>>")?;
     let mut population = wake_population(&blueprint, seeds)?;
 
     // Create outdir
-    let out_dir = squid_path.join(format!("experiments/{:x}", exp_id));
-    let data_dir = out_dir.join("data");
+    let out_dir = squid_exp_path.join(&exp_id_x);
     if !once {
-        if !out_dir.exists() {
-            fs::create_dir_all(&out_dir)?;
-        }
-        fs::create_dir(out_dir.join("agents"))?;
-        fs::write(
-            out_dir.join("population_parameters.txt"),
-            format!("{:#?}", &blueprint.ga),
-        )?;
-
-        fs::create_dir(&data_dir)?;
-        fs::write(data_dir.join("fitness.csv"), "avg,best\n")?;
-
-        if let Some(csv_data) = &blueprint.csv_data {
-            for (name, headers) in csv_data {
-                fs::write(
-                    data_dir.join(name).with_extension("csv"),
-                    format!("gen,{}\n", headers.join(",")),
-                )?;
-            }
-        }
+        create_exp_dir(squid_exp_path, &exp_id_x, blueprint)?;
     }
 
     // Request containers through broker
@@ -502,19 +518,17 @@ fn experiment(
 
     let mut workers = HashMap::<u64, Worker>::new();
     let mut supervisors = HashMap::<u64, Supervisor>::new();
-    let mut client_connected = true;
 
     // Worker ids that have been authorized by a supervisor but have not yet initialized
     let mut expected_workers = HashSet::<u64>::new();
 
     let config = &blueprint.ga;
 
-    let save_population = |population: &Box<dyn GenericPopulation>,
-                           client_connected: bool|
-     -> Result<()> {
+    let save_population = |population: &Box<dyn GenericPopulation>| -> Result<()> {
         let agents = population.pack_save()?;
 
-        if client_connected {
+        if client_connected.load() {
+            trace!("Sending population to client");
             cl_dealer.send_multipart(["save".as_bytes(), &exp_id_b, b"population", &agents], 0)?;
         }
 
@@ -530,6 +544,8 @@ fn experiment(
         }
         Ok(())
     };
+
+    let mut has_detached = false;
 
     let mut experiment_main_loop = || -> Result<ControlFlow<(), String>> {
         const HB_INTERVAL: Duration = Duration::from_secs(1);
@@ -549,10 +565,9 @@ fn experiment(
 
         for gen_num in 1..=config.num_generations {
             let gen_num_b = (gen_num as u32).to_be_bytes();
-            cl_dealer.send_multipart(
-                ["prog".as_bytes(), &exp_id_b, b"gen", &gen_num_b, b"running"],
-                0,
-            )?;
+            if client_connected.load() {
+                cl_dealer.send_multipart(["prog".as_bytes(), b"gen", &gen_num_b, b"running"], 0)?;
+            }
 
             let mut agent_stack = (0..config.population_size).rev().collect::<Vec<_>>();
             let mut completed_sims: usize = 0;
@@ -562,13 +577,12 @@ fn experiment(
 
             let try_send_queued_agent = |wkid: u64,
                                          agent_stack: &mut Vec<usize>,
-                                         population: &Box<dyn GenericPopulation>,
-                                         client_connected: bool|
+                                         population: &Box<dyn GenericPopulation>|
              -> Result<Option<usize>> {
                 let opt_ix = agent_stack.pop();
                 if let Some(next_ix) = opt_ix {
                     let agent = population.pack_agent(next_ix)?;
-                    debug!("Sending agent {} to worker {:x}", next_ix, wkid);
+                    trace!("Sending agent {} to worker {:x}", next_ix, wkid);
                     wk_router.send_multipart(
                         [
                             wkid.to_be_bytes().as_slice(),
@@ -579,25 +593,23 @@ fn experiment(
                         ],
                         0,
                     )?;
-                    if client_connected {
-                        cl_dealer.send_multipart(
-                            [
-                                "prog".as_bytes(),
-                                &exp_id_b,
-                                b"agent",
-                                &(next_ix as u32).to_be_bytes(),
-                                b"running",
-                            ],
-                            0,
-                        )?;
-                    }
+                    // if !has_detached && client_connected.load() {
+                    //     cl_dealer.send_multipart(
+                    //         [
+                    //             "prog".as_bytes(),
+                    //             b"agent",
+                    //             &(next_ix as u32).to_be_bytes(),
+                    //             b"running",
+                    //         ],
+                    //         0,
+                    //     )?;
+                    // }
                 }
                 Ok(opt_ix)
             };
 
             for (wkid, worker) in workers.iter_mut() {
-                match try_send_queued_agent(*wkid, &mut agent_stack, &population, client_connected)?
-                {
+                match try_send_queued_agent(*wkid, &mut agent_stack, &population)? {
                     Some(ix) => worker.agent_ix = Some(ix),
                     None => break,
                 }
@@ -640,9 +652,10 @@ fn experiment(
                         bail!("All workers died. Aborting experiment.");
                     }
 
-                    if client_connected && last_cl_hb_in.elapsed() > CL_TTL {
+                    if client_connected.load() && last_cl_hb_in.elapsed() > CL_TTL {
                         warn!("Client disconnected");
-                        client_connected = false;
+                        has_detached = true;
+                        client_connected.store(false);
                     }
 
                     last_hb = Instant::now();
@@ -672,24 +685,29 @@ fn experiment(
                             return Ok(ControlFlow::Break(()));
                         }
                         b"attach" => {
-                            if client_connected {
-                                cl_dealer.send_multipart(
-                                    [
-                                        "error".as_bytes(),
-                                        &[0u8],
-                                        b"A client is already connected to this experiment.",
-                                    ],
-                                    0,
-                                )?;
-                                continue;
-                            }
-
                             info!("Client attached");
-                            client_connected = true;
+                            client_connected.store(true);
+                            last_cl_hb_in = Instant::now();
+
+                            cl_dealer.send_multipart(
+                                ["prog".as_bytes(), b"history", &rmp_serde::to_vec(&history)?],
+                                0,
+                            )?;
+                            cl_dealer.send_multipart(
+                                [
+                                    "prog".as_bytes(),
+                                    b"short",
+                                    &gen_num_b,
+                                    &(completed_sims as u32).to_be_bytes(),
+                                ],
+                                0,
+                            )?;
+                            // todo send all evaluations so far
                         }
                         b"detach" => {
                             info!("Client detached");
-                            client_connected = false;
+                            has_detached = true;
+                            client_connected.store(false);
                         }
                         _ => (),
                     }
@@ -703,7 +721,7 @@ fn experiment(
                     if cmd == b"init" {
                         if expected_workers.remove(&wk_id) {
                             workers.insert(wk_id, Worker { agent_ix: None });
-                            debug!("Worker {:x} initialized", wk_id);
+                            trace!("Worker {:x} initialized", wk_id);
                         } else {
                             warn!(
                                 "Worker {:x} initialized but was not authorized by a supervisor. Killing worker.",
@@ -715,12 +733,7 @@ fn experiment(
                                 warn!("Failed to kill worker {:x}: {}", wk_id, e);
                             }
                         }
-                        let opt_ix = try_send_queued_agent(
-                            wk_id,
-                            &mut agent_stack,
-                            &population,
-                            client_connected,
-                        )?;
+                        let opt_ix = try_send_queued_agent(wk_id, &mut agent_stack, &population)?;
                         workers.entry(wk_id).and_modify(|wk| wk.agent_ix = opt_ix);
                         continue;
                     }
@@ -747,12 +760,8 @@ fn experiment(
 
                     match cmd {
                         b"sim" => {
-                            let opt_ix = try_send_queued_agent(
-                                wk_id,
-                                &mut agent_stack,
-                                &population,
-                                client_connected,
-                            )?;
+                            let opt_ix =
+                                try_send_queued_agent(wk_id, &mut agent_stack, &population)?;
                             workers.entry(wk_id).and_modify(|wk| wk.agent_ix = opt_ix);
 
                             let ix = de_usize(&msgb[4])?;
@@ -765,17 +774,26 @@ fn experiment(
                                 best_agent_ix = ix;
                             }
 
-                            debug!("Worker {:x} finished simulation for agent {}", wk_id, ix);
+                            trace!("Worker {:x} finished simulation for agent {}", wk_id, ix);
 
-                            if client_connected {
+                            if client_connected.load() {
                                 cl_dealer.send_multipart(
-                                    ["prog".as_bytes(), &exp_id_b, b"agent", &msgb[4], b"done"],
+                                    [
+                                        "prog".as_bytes(),
+                                        b"short",
+                                        &gen_num_b,
+                                        &(completed_sims as u32).to_be_bytes(),
+                                    ],
                                     0,
                                 )?;
+                                // cl_dealer.send_multipart(
+                                //     ["prog".as_bytes(), b"agent", &msgb[4], b"done"],
+                                //     0,
+                                // )?;
                             }
                         }
                         b"error" => {
-                            if client_connected {
+                            if client_connected.load() {
                                 let cur_gen = de_u32(&msgb[3])?;
                                 let agent_ix = de_u32(&msgb[4])?;
                                 let msg = str::from_utf8(&msgb[5])?;
@@ -851,7 +869,7 @@ fn experiment(
                                 warn!("Worker {:x} died", wk_id);
                                 if let Some(worker) = workers.remove(&wk_id) {
                                     if let Some(ix) = worker.agent_ix {
-                                        debug!("Pushing {} to stack", ix);
+                                        trace!("Pushing {} to retry stack", ix);
                                         agent_stack.push(ix);
                                         // If there are any idle workers, retry agent immediately
                                         if let Some((id, wk)) =
@@ -861,7 +879,6 @@ fn experiment(
                                                 *id,
                                                 &mut agent_stack,
                                                 &population,
-                                                client_connected,
                                             )?;
                                             wk.agent_ix = Some(ix);
                                         }
@@ -893,9 +910,9 @@ fn experiment(
                                 last_hb = Instant::now() + SV_GRACE;
                             }
 
-                            if client_connected {
+                            if client_connected.load() {
                                 cl_dealer.send_multipart(
-                                    ["prog".as_bytes(), &exp_id_b, b"node", nd_id_b, status_b],
+                                    ["prog".as_bytes(), b"node", nd_id_b, status_b],
                                     0,
                                 )?;
                             }
@@ -907,7 +924,7 @@ fn experiment(
 
             // Get experimental data from best agent
             if blueprint.csv_data.is_some() {
-                debug!("Requesting csv data");
+                trace!("Requesting csv data for best agent");
                 wk_router.send_multipart(
                     [
                         best_agent_wkid.to_be_bytes().as_slice(),
@@ -932,7 +949,8 @@ fn experiment(
                         b"data" => match msgb.into_iter().nth(5) {
                             Some(data) => {
                                 // Send data for save on client
-                                if client_connected {
+                                if !has_detached && client_connected.load() {
+                                    trace!("Sending csv data to client");
                                     cl_dealer.send_multipart(
                                         ["save".as_bytes(), &exp_id_b, b"data", &gen_num_b, &data],
                                         0,
@@ -941,6 +959,7 @@ fn experiment(
 
                                 if !once {
                                     // Save data locally
+                                    trace!("Saving csv data to disk");
                                     let data_dir = out_dir.join("data");
                                     let data: Option<HashMap<String, Vec<Vec<Option<f64>>>>> =
                                         serde_json::from_slice(&data).context(
@@ -975,10 +994,15 @@ fn experiment(
                 }
             }
 
+            trace!("Evaluating population");
             let evaluation = population.evaluate();
+
+            history.best_fitness_vec.push(evaluation.best_fitness);
+            history.avg_fitness_vec.push(evaluation.avg_fitness);
 
             // Save evaluation
             if !once {
+                trace!("Saving evaluation to disk");
                 let path = out_dir.join("data/fitness.csv");
                 let file = OpenOptions::new().append(true).open(path)?;
                 let mut wtr = csv::Writer::from_writer(file);
@@ -990,11 +1014,11 @@ fn experiment(
             }
 
             // Send evaluation
-            if client_connected {
+            if client_connected.load() {
+                trace!("Sending evaluation to client");
                 cl_dealer.send_multipart(
                     [
                         "prog".as_bytes(),
-                        &exp_id_b,
                         b"gen",
                         &gen_num_b,
                         b"done",
@@ -1007,14 +1031,16 @@ fn experiment(
             if let Some(f) = config.fitness_threshold
                 && evaluation.best_fitness >= f
             {
-                debug!("Population reached fitness threshold. Ending experiment.");
+                info!("Population reached fitness threshold. Ending experiment.");
                 return Ok(ControlFlow::Continue("threshold".to_string()));
             }
 
             if gen_num % config.save_every == 0 {
-                save_population(&population, client_connected)?;
+                trace!("Saving population");
+                save_population(&population)?;
             }
 
+            trace!("Evolving population");
             population.evolve()?;
         }
 
@@ -1030,8 +1056,13 @@ fn experiment(
         }
     };
 
-    save_population(&population, client_connected)?;
-    if client_connected {
+    if has_detached {
+        cl_dealer.send("zft", 0)?;
+        zft::send(out_dir.clone(), cl_dealer)?;
+    }
+
+    save_population(&population)?;
+    if client_connected.load() {
         cl_dealer.send_multipart(["done".as_bytes(), &exp_id_b, reason.as_bytes()], 0)?;
     }
 

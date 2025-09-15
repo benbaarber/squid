@@ -3,10 +3,10 @@ use std::{
     io::{self},
     ops::ControlFlow,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, UNIX_EPOCH},
 };
 
-use crate::{NodeStatus, PopEvaluation, client::Experiment, de_u8, de_usize};
+use crate::{ExpHistory, NodeStatus, PopEvaluation, client::Experiment, de_u8, de_usize};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{layout::Flex, prelude::*, style::Stylize, text::ToSpan, widgets::*};
@@ -25,7 +25,7 @@ pub enum AppState {
 pub struct App {
     // exp data
     experiment: Arc<Experiment>,
-    start_time: Instant,
+    start_instant: Instant,
     end_duration: Option<Duration>,
     // exp state
     cur_gen: usize,
@@ -50,7 +50,7 @@ impl App {
 
         Ok(Self {
             experiment,
-            start_time: Instant::now(),
+            start_instant: Instant::now(),
             end_duration: None,
             cur_gen: 1,
             num_gens,
@@ -120,7 +120,7 @@ impl App {
                         if self.show_detach {
                             ex_sock.send("detach", 0)?;
                             info!(
-                                "Detached from experiment {} running on remote broker ({})",
+                                "Detached from experiment {:x} running on remote broker ({})",
                                 self.experiment.id, &self.experiment.url
                             );
                             return Ok(ControlFlow::Break(()));
@@ -139,6 +139,30 @@ impl App {
         while let Ok(msgb) = ex_sock.recv_multipart(zmq::DONTWAIT) {
             let prog_type = msgb[0].as_slice();
             match prog_type {
+                b"short" => {
+                    self.cur_gen = de_usize(&msgb[1])?;
+                    self.agents_done = de_usize(&msgb[2])?;
+                }
+                b"history" => {
+                    let ExpHistory {
+                        start,
+                        avg_fitness_vec,
+                        best_fitness_vec,
+                    } = rmp_serde::from_slice(&msgb[1])?;
+                    self.max_fitness = best_fitness_vec.iter().copied().reduce(f64::max).unwrap();
+                    self.best_fitnesses = best_fitness_vec
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, x)| ((i + 1) as f64, x))
+                        .collect();
+                    self.avg_fitnesses = avg_fitness_vec
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, x)| ((i + 1) as f64, x))
+                        .collect();
+                    let offset = UNIX_EPOCH.elapsed()?.as_secs() - start;
+                    self.start_instant = Instant::now() - Duration::from_secs(offset);
+                }
                 b"gen" => {
                     let status = msgb[2].as_slice();
                     match status {
@@ -198,7 +222,7 @@ impl App {
     }
 
     fn end_timer(&mut self) {
-        let elapsed = self.start_time.elapsed();
+        let elapsed = self.start_instant.elapsed();
         self.end_duration = Some(elapsed);
         info!("Experiment time: {}", format_duration(elapsed));
     }
@@ -235,7 +259,7 @@ impl WidgetRef for App {
             " | ".to_span(),
             format_duration(
                 self.end_duration
-                    .unwrap_or_else(|| self.start_time.elapsed()),
+                    .unwrap_or_else(|| self.start_instant.elapsed()),
             )
             .gray(),
         ]))

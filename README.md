@@ -36,11 +36,11 @@ Python:
 squid.worker(your_sim_fn)
 ```
 
-Squid will take the provided `Dockerfile`, build the image, push it to the
-GitLab registry, and tell other machines in the infrastructure to pull that
+Squid will take the provided `Dockerfile`, build the image, push it to your
+docker registry, and tell other machines in the infrastructure to pull that
 image down and run it. These containers connect to a central genetic algorithm
-process, and agents are distributed among them to be simulated and evaluated
-in parallel.
+process, and agents are distributed among them to be simulated and evaluated in
+parallel.
 
 With that high level description in mind, let's go over the actual components of Squid.
 
@@ -105,11 +105,7 @@ can add these files to an existing project.
 ### `Dockerfile`
 
 When creating a new Squid experiment, the first thing to do is get your
-simulation environment together and start developing your docker image. There
-are existing base images for simulation environments. For example, if you're
-using Gazebo, use the base Gazebo squid image in our container registry (will
-link actual image when done). Add any additional dependencies such as ROS
-packages to the image, and set the entrypoint to spawn the squid worker. 
+simulation environment together and start developing your docker image.
 
 **NOTE:** Unless you are only running Squid locally, it is important to learn
 some more advanced Docker concepts, particularly how to optimize for image size

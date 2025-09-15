@@ -12,14 +12,14 @@ use std::{
 };
 
 use crate::{
-    Experiment, NodeStatus, PopEvaluation, bail_assert, bincode_deserialize,
+    Experiment, NodeStatus, PopEvaluation, bail_assert,
     blueprint::{Blueprint, InitMethod},
-    de_u8, de_u32, de_u64, de_usize, docker, zft,
+    create_exp_dir, de_u8, de_u32, de_u64, de_usize, docker, zft,
 };
 use anyhow::{Context, Result, bail};
 use log::warn;
 use serde_json::Value;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
 struct Client {
     ctx: zmq::Context,
@@ -76,7 +76,7 @@ impl Client {
     /// Prepare a new experiment from a squid project directory
     ///
     /// Returns an experiment metadata object
-    fn prepare(&self, project_path: PathBuf, test_threads: Option<usize>) -> Result<Experiment> {
+    fn prepare(&self, project_path: PathBuf, config: &ExpConfig) -> Result<Experiment> {
         bail_assert!(docker::is_installed()?, "Docker must be installed");
 
         bail_assert!(
@@ -89,8 +89,6 @@ impl Client {
             "Invalid Squid project: No `Dockerfile` found in {}",
             project_path.canonicalize()?.display()
         );
-
-        let is_local = self.broker_addr == "localhost";
 
         // Ping broker
 
@@ -105,9 +103,9 @@ impl Client {
             .with_context(|| format!("Failed to parse blueprint file `{}`", bpath.display()))?;
         info!("🔧 Read blueprint from `{}`", bpath.display());
         blueprint.validate()?;
-        if let Some(t) = test_threads {
+        if config.test {
             blueprint.ga.num_generations = 1;
-            blueprint.ga.population_size = t;
+            blueprint.ga.population_size = config.test_threads;
             blueprint.ga.save_fraction = 1.0;
             blueprint.ga.fitness_threshold = None;
         }
@@ -124,7 +122,7 @@ impl Client {
             // failure message
             bail!("Failed to build docker image");
         }
-        if !is_local && !task_image.starts_with("docker.io/library/") {
+        if config.should_push && !task_image.starts_with("docker.io/library/") {
             info!("🐋 Pushing docker image...");
             if !docker::push(&task_image)?.wait()?.success() {
                 // failure message
@@ -138,33 +136,9 @@ impl Client {
 
         // Create outdir
 
-        let mut out_dir = project_path.join(&blueprint.experiment.out_dir);
-        if !out_dir.exists() {
-            fs::create_dir_all(&out_dir)?;
-        }
-        // let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
-        // out_dir.push(timestamp);
-        out_dir.push(&id_x);
-        fs::create_dir(&out_dir)?;
-        fs::write(out_dir.join("EXPERIMENT_ID"), &id_x)?;
-        fs::create_dir(out_dir.join("agents"))?;
-        fs::write(
-            out_dir.join("population_parameters.txt"),
-            format!("{:#?}", &blueprint.ga),
-        )?;
-
-        let data_dir = out_dir.join("data");
-        fs::create_dir(&data_dir)?;
-        fs::write(data_dir.join("fitness.csv"), "avg,best\n")?;
-
-        if let Some(csv_data) = &blueprint.csv_data {
-            for (name, headers) in csv_data {
-                fs::write(
-                    data_dir.join(name).with_extension("csv"),
-                    format!("gen,{}\n", headers.join(",")),
-                )?;
-            }
-        }
+        let out_dir = project_path.join(&blueprint.experiment.out_dir);
+        let exp_dir = out_dir.join(&id_x);
+        create_exp_dir(&out_dir, &id_x, &blueprint)?;
 
         // Check for optional seeds
 
@@ -219,16 +193,16 @@ impl Client {
             id,
             blueprint,
             url,
-            out_dir,
+            out_dir: exp_dir,
             is_new: true,
-            is_local,
-            is_test: test_threads.is_some(),
+            is_local: config.local,
+            is_test: config.test,
         })
     }
 
-    fn attach(&self, id: &str, out_dir: &Path) -> Result<Experiment> {
-        let id =
-            u64::from_str_radix(id, 16).context("Failed to parse provided experiment ID string")?;
+    fn attach(&self, id_s: &str, out_dir: &Path) -> Result<Experiment> {
+        let id = u64::from_str_radix(id_s, 16)
+            .context("Failed to parse provided experiment ID string")?;
         self.ping()?;
 
         let broker_sock = self.ctx.socket(zmq::DEALER)?;
@@ -245,7 +219,7 @@ impl Client {
         let (url, blueprint) = match cmd {
             b"reattach" => {
                 let port = de_u32(&msgb[1])?;
-                let blueprint = bincode_deserialize(&msgb[2])?;
+                let blueprint = rmp_serde::from_slice(&msgb[2])?;
                 let url = format!("tcp://{}:{}", &self.broker_addr, port);
                 (url, blueprint)
             }
@@ -259,13 +233,16 @@ impl Client {
             ),
         };
 
-        // needs to send back blueprint & port
+        let exp_dir = out_dir.join(id_s);
+        if !exp_dir.exists() {
+            create_exp_dir(out_dir, id_s, &blueprint)?;
+        }
 
         Ok(Experiment {
             id,
             blueprint,
             url,
-            out_dir: out_dir.to_path_buf(),
+            out_dir: exp_dir,
             is_new: false,
             is_local: false,
             is_test: false,
@@ -296,6 +273,8 @@ impl Client {
 
                 if experiment.is_new {
                     broker_sock.send_multipart(["run".as_bytes(), &id_b], 0)?;
+                } else {
+                    broker_sock.send("attach", 0)?;
                 }
 
                 let mut sockets = [
@@ -326,11 +305,12 @@ impl Client {
                         let cmd = msgb[0].as_slice();
                         match cmd {
                             b"prog" => {
-                                ui_sock.send_multipart(&msgb[2..], 0)?;
+                                trace!("[CLI EXP] prog");
+                                ui_sock.send_multipart(&msgb[1..], 0)?;
                                 handle_prog(&msgb, &experiment.out_dir)?;
                             }
                             b"save" => {
-                                debug!("[CLI EXP] save");
+                                trace!("[CLI EXP] save");
                                 let save_type = msgb[2].as_slice();
                                 match save_type {
                                     b"population" => {
@@ -340,8 +320,14 @@ impl Client {
                                     _ => (),
                                 }
                             }
+                            b"zft" => {
+                                trace!("[CLI EXP] zft");
+                                // this should put it in `original_dir/exp_id/...` we may want to
+                                // move it to just `original_dir/...`
+                                zft::recv(experiment.out_dir.parent().unwrap(), &broker_sock)?;
+                            }
                             b"done" => {
-                                debug!("[CLI EXP] done");
+                                trace!("[CLI EXP] done");
                                 let reason = &msgb[2];
                                 if reason == b"threshold" {
                                     info!(
@@ -372,11 +358,19 @@ impl Client {
 
                     if sockets[1].is_readable() {
                         let msg = ui_sock.recv_bytes(0)?;
-                        if msg == b"abort" {
-                            debug!("Sending abort to experiment thread");
-                            broker_sock.send_multipart([b"abort", id_b.as_slice()], 0)?;
-                            debug!("Experiment thread aborted");
-                            break;
+                        match &msg[..] {
+                            b"abort" => {
+                                trace!("Sending abort to experiment thread");
+                                broker_sock.send_multipart([b"abort", id_b.as_slice()], 0)?;
+                                debug!("Experiment thread aborted");
+                                break;
+                            }
+                            b"detach" => {
+                                trace!("Sending detach to experiment thread");
+                                broker_sock.send_multipart(["detach".as_bytes()], 0)?;
+                                break;
+                            }
+                            _ => (),
                         }
                     }
                 }
@@ -385,7 +379,7 @@ impl Client {
             })() {
                 Ok(s) => s,
                 Err(e) => {
-                    error!("{}", e.to_string());
+                    error!("Exp loop error: {}", e.to_string());
                     ui_sock.send("crashed", 0).unwrap();
                     false
                 }
@@ -399,11 +393,6 @@ impl Client {
         }
 
         let success = exp_thread.join().unwrap();
-
-        if success {
-            info!("🧪 Experiment done");
-        }
-
         Ok(success)
     }
 
@@ -486,17 +475,20 @@ impl Client {
     }
 }
 
-pub fn run(
-    path: PathBuf,
-    broker_addr: String,
-    test_threads: Option<usize>,
-    show_tui: bool,
-) -> Result<bool> {
+pub struct ExpConfig {
+    pub local: bool,
+    pub test: bool,
+    pub test_threads: usize,
+    pub should_push: bool,
+    pub show_tui: bool,
+}
+
+pub fn run(path: PathBuf, broker_addr: String, config: ExpConfig) -> Result<bool> {
     let ctx = zmq::Context::new();
     let client = Client::new(ctx, broker_addr);
-    let experiment = client.prepare(path, test_threads)?;
+    let experiment = client.prepare(path, &config)?;
     let experiment = Arc::new(experiment);
-    let mut success = client.run(Arc::clone(&experiment), show_tui)?;
+    let mut success = client.run(Arc::clone(&experiment), config.show_tui)?;
 
     if experiment.is_test {
         success = client.validate(&experiment)?;
@@ -524,10 +516,10 @@ pub fn fetch(broker_addr: String, id: String, out_dir: &Path) -> Result<()> {
 }
 
 fn handle_prog(msgb: &[Vec<u8>], out_dir: &Path) -> Result<()> {
-    let prog_type = msgb[2].as_slice();
+    let prog_type = msgb[1].as_slice();
 
-    if prog_type == b"gen" && msgb[4] == b"done" {
-        let evaluation: PopEvaluation = serde_json::from_slice(&msgb[5])?;
+    if prog_type == b"gen" && msgb[3] == b"done" {
+        let evaluation: PopEvaluation = serde_json::from_slice(&msgb[4])?;
         let path = out_dir.join("data/fitness.csv");
         let file = OpenOptions::new().append(true).open(path)?;
         let mut wtr = csv::Writer::from_writer(file);
@@ -543,8 +535,8 @@ fn handle_prog(msgb: &[Vec<u8>], out_dir: &Path) -> Result<()> {
     }
 
     if prog_type == b"node" {
-        let nd_id = de_u64(&msgb[3])?;
-        let status_u8 = de_u8(&msgb[4])?;
+        let nd_id = de_u64(&msgb[2])?;
+        let status_u8 = de_u8(&msgb[3])?;
         let status = NodeStatus::from(status_u8);
         match status {
             NodeStatus::Pulling => {

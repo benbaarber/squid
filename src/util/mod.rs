@@ -3,13 +3,16 @@ pub mod docker;
 pub mod stdout_buffer;
 pub mod zft;
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    any::type_name,
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use anyhow::{Context, Result, anyhow};
-use bincode::{
-    config::{BigEndian, Configuration},
-    error::{DecodeError, EncodeError},
-};
+use bincode::config::{BigEndian, Configuration};
 use num_enum::{FromPrimitive, IntoPrimitive};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -56,6 +59,34 @@ pub struct Experiment {
     pub is_test: bool,
 }
 
+/// Experiment history
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpHistory {
+    pub start: u64,
+    pub best_fitness_vec: Vec<f64>,
+    pub avg_fitness_vec: Vec<f64>,
+}
+
+#[derive(Debug)]
+pub struct AtomicBoolRelaxed {
+    pub inner: AtomicBool,
+}
+
+impl AtomicBoolRelaxed {
+    pub fn new(val: bool) -> Self {
+        Self {
+            inner: AtomicBool::new(val),
+        }
+    }
+    pub fn load(&self) -> bool {
+        self.inner.load(Ordering::Relaxed)
+    }
+
+    pub fn store(&self, val: bool) {
+        self.inner.store(val, Ordering::Relaxed)
+    }
+}
+
 /// Best and average fitness scores of a single generation,
 /// evaluated in the broker and sent to the client after each generation.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -82,14 +113,58 @@ pub fn env(key: &str) -> Result<String> {
     std::env::var(key).with_context(|| format!("${} not set", key))
 }
 
-pub fn bincode_serialize<T: Serialize>(val: T) -> std::result::Result<Vec<u8>, EncodeError> {
+pub fn bincode_serialize<T: Serialize>(val: T) -> Result<Vec<u8>> {
     bincode::serde::encode_to_vec(val, BINCODE_CONF)
+        .with_context(|| format!("Failed to serialize type {} to binary", type_name::<T>()))
 }
 
-pub fn bincode_deserialize<T: DeserializeOwned>(val: &[u8]) -> std::result::Result<T, DecodeError> {
-    Ok(bincode::serde::decode_from_slice(&val, BINCODE_CONF)?.0)
+pub fn bincode_deserialize<T: DeserializeOwned>(val: &[u8]) -> Result<T> {
+    Ok(bincode::serde::decode_from_slice(val, BINCODE_CONF)
+        .with_context(|| {
+            format!(
+                "Failed to deserialize type {} from binary",
+                type_name::<T>()
+            )
+        })?
+        .0)
 }
 
+pub fn create_exp_dir(path: &Path, id_x: &str, blueprint: &Blueprint) -> Result<()> {
+    let mut out_dir = path.to_path_buf();
+
+    // Create outdir
+
+    if !out_dir.exists() {
+        fs::create_dir_all(&out_dir)?;
+    }
+    // let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+    // out_dir.push(timestamp);
+    out_dir.push(id_x);
+    fs::create_dir(&out_dir)?;
+    fs::write(out_dir.join("EXPERIMENT_ID"), id_x)?;
+    fs::create_dir(out_dir.join("agents"))?;
+    fs::write(
+        out_dir.join("population_parameters.txt"),
+        format!("{:#?}", &blueprint.ga),
+    )?;
+
+    let data_dir = out_dir.join("data");
+    fs::create_dir(&data_dir)?;
+    fs::write(data_dir.join("fitness.csv"), "avg,best\n")?;
+
+    if let Some(csv_data) = &blueprint.csv_data {
+        for (name, headers) in csv_data {
+            fs::write(
+                data_dir.join(name).with_extension("csv"),
+                format!("gen,{}\n", headers.join(",")),
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+/// deserialize u32 to usize
 pub fn de_usize(bytes: &[u8]) -> Result<usize> {
     Ok(de_u32(bytes)? as usize)
 }

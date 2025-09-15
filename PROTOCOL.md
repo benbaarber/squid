@@ -23,7 +23,7 @@
 
 ### Experiment Thread -> Client
 
-- prog (id: `u64`)
+- prog
   - gen (num: `u32`)
     - running
     - done (evaluation: `PopEvaluation`)
@@ -31,10 +31,13 @@
     - running
     - done
     - failed (message: `str`)
+  - short (gen: `u32`) (agent: `u32`)
   - node (node_id: `u64`) (status: `NodeStatus`)
+  - history (exphistory: `ExpHistory`)
 - save (id: `u64`)
   - population (agents: `Vec<json>`)
   - data (gen: `u32`) (data: `json`)
+- zft ... (do zft over same socket)
 - done (id: `u64`) (reason: `str`)
 - error (fatal: `bool`) (message: `str`)
 

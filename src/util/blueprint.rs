@@ -5,13 +5,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::bail_assert;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ExperimentConfig {
     pub image: String,
     pub out_dir: PathBuf,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum NN {
     CTRNN {
@@ -22,7 +22,7 @@ pub enum NN {
     },
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum SelectionMethod {
     Softmax,
@@ -30,14 +30,14 @@ pub enum SelectionMethod {
     Roulette,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum CrossoverMethod {
     Uniform,
     NPoint { n: u32 },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum InitMethod {
     Flat,
@@ -45,7 +45,7 @@ pub enum InitMethod {
     Seeded { dir: PathBuf, mutate: bool },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct GAConfig {
     pub population_size: usize,
     pub num_generations: usize,
@@ -63,7 +63,7 @@ pub struct GAConfig {
     pub save_fraction: f64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Blueprint {
     pub experiment: ExperimentConfig,
     pub nn: NN,
@@ -149,6 +149,67 @@ impl Blueprint {
         if self.ga.save_every == 0 {
             self.ga.save_every = usize::MAX;
         }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_blueprint() -> Blueprint {
+        Blueprint {
+            experiment: ExperimentConfig {
+                image: "".into(),
+                out_dir: "path".into(),
+            },
+            nn: NN::CTRNN {
+                input_size: 3,
+                hidden_size: 3,
+                output_size: 3,
+                step_size: 0.1,
+            },
+            ga: GAConfig {
+                population_size: 100,
+                num_generations: 10,
+                elitism_fraction: 0.5,
+                random_fraction: 0.0,
+                mutation_probability: 0.1,
+                mutation_magnitude: 1.0,
+                selection_fraction: 1.0,
+                selection_method: SelectionMethod::Softmax,
+                crossover_probability: 0.5,
+                crossover_method: Some(CrossoverMethod::Uniform),
+                fitness_threshold: None,
+                init_method: InitMethod::Flat,
+                save_every: 1,
+                save_fraction: 1.0,
+            },
+            csv_data: None,
+        }
+    }
+
+    #[test]
+    fn blueprint_toml_serde() -> Result<()> {
+        let blueprint = make_blueprint();
+
+        let t = toml::to_string(&blueprint)?;
+        let blueprint2 = toml::from_str(&t)?;
+
+        assert_eq!(blueprint, blueprint2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn blueprint_rmp_serde() -> Result<()> {
+        let blueprint = make_blueprint();
+
+        let bytes = rmp_serde::to_vec(&blueprint)?;
+        let blueprint2 = rmp_serde::from_slice(&bytes)?;
+
+        assert_eq!(blueprint, blueprint2);
 
         Ok(())
     }
