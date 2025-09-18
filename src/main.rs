@@ -52,6 +52,7 @@ enum Commands {
         #[arg(long)]
         no_push: bool,
     },
+    /// Attach to a running experiment on a remote broker
     Attach {
         /// Experiment ID
         id: String,

@@ -129,7 +129,14 @@ As long as the worker is initialized at some point in the entrypoint of the
 docker image and the csv data matches up, Squid is cool with you no matter how
 weird your code is.
 
+## Setting Up Infrastructure
+
+- **Broker**: Run `squid broker`
+- **Node**: Run `squid node -b <broker-addr> ...opts`
+
 ## Workflow
+
+### Test Mode
 
 The Squid CLI has a test mode (`squid run -t`) that should _always_ be used
 before deploying an experiment, locally or not. Test mode will spawn a local
@@ -142,6 +149,8 @@ your terminal, allowing for easy debugging. If any steps fail (they will), you
 can catch them before starting an experiment and walking away. Only when all
 tests pass should you deploy your experiment.
 
+### Local Mode
+
 Squid also has a local mode (`squid run -l`) that will also spawn the broker
 and node locally, but in this case it will go through with your entire
 experiment on your machine. It will not push or pull from the container
@@ -149,7 +158,21 @@ registry. Local mode is useful for smaller scale experiments and additional
 testing. You can also configure the number of parallel workers to spawn with
 the `-n <number>` option.
 
-More on running in distributed mode when the Squid infrastructure is actually deployed.
+### Remote Mode
+
+The most common scenario will be where the squid broker and nodes are deployed
+on an existing infrastructure, and an experiment needs to be initiated from a
+remote device. In this case, either pass the broker address to the command
+(`squid run -b <broker-addr>`), or set the environment variable
+`SQUID_BROKER_ADDR` to the same value.
+
+In this mode, since the client does not need to be connected for the experiment
+to progress, the client can detach from the experiment at any point after
+initializing it. In the TUI, hit `d` to detach. To reattach at a later point,
+use `squid attach <experiment-id> <path>`, where the path is the parent path
+you want to dump the experiment outdir to. To fetch experimental data from the
+broker after the experiment has already ended, use `squid fetch <experiment-id>
+<path>`.
 
 ## Worker Installation
 
