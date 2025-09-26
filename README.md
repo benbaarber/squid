@@ -13,7 +13,7 @@ echo '. "$HOME/.cargo/env"' >> ~/.bashrc && source ~/.bashrc
 Then, install the CLI by running
 
 ```sh
-cargo install --git https://github.com/benbaarber/squid-worker.git squid
+cargo install --git https://github.com/benbaarber/squid.git squid
 ```
 
 Run `squid` and you should see a friendly help message. Run `squid help <subcommand>` to learn how to use each subcommand.
