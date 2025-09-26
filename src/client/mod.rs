@@ -2,7 +2,6 @@ mod tui;
 
 use core::str;
 use std::{
-    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
@@ -12,9 +11,7 @@ use std::{
 };
 
 use crate::{
-    Experiment, NodeStatus, PopEvaluation, bail_assert,
-    blueprint::{Blueprint, InitMethod},
-    create_exp_dir, de_u8, de_u32, de_u64, de_usize, docker, zft,
+    bail_assert, blueprint::{Blueprint, InitMethod}, create_exp_dir, de_u32, de_u64, de_u8, docker, save_exp_data_b, zft, ExperimentMeta, NodeStatus, PopEvaluation
 };
 use anyhow::{Context, Result, bail};
 use log::warn;
@@ -76,7 +73,7 @@ impl Client {
     /// Prepare a new experiment from a squid project directory
     ///
     /// Returns an experiment metadata object
-    fn prepare(&self, project_path: PathBuf, config: &ExpConfig) -> Result<Experiment> {
+    fn prepare(&self, project_path: PathBuf, config: &ExpConfig) -> Result<ExperimentMeta> {
         bail_assert!(docker::is_installed()?, "Docker must be installed");
 
         bail_assert!(
@@ -189,7 +186,7 @@ impl Client {
             ),
         };
 
-        Ok(Experiment {
+        Ok(ExperimentMeta {
             id,
             blueprint,
             url,
@@ -200,7 +197,7 @@ impl Client {
         })
     }
 
-    fn attach(&self, id_s: &str, out_dir: &Path) -> Result<Experiment> {
+    fn attach(&self, id_s: &str, out_dir: &Path) -> Result<ExperimentMeta> {
         let id = u64::from_str_radix(id_s, 16)
             .context("Failed to parse provided experiment ID string")?;
         self.ping()?;
@@ -238,7 +235,7 @@ impl Client {
             create_exp_dir(out_dir, id_s, &blueprint)?;
         }
 
-        Ok(Experiment {
+        Ok(ExperimentMeta {
             id,
             blueprint,
             url,
@@ -250,7 +247,7 @@ impl Client {
     }
 
     /// Run the squid client with the optional TUI
-    fn run(&self, experiment: Arc<Experiment>, show_tui: bool) -> Result<bool> {
+    fn run(&self, experiment: Arc<ExperimentMeta>, show_tui: bool) -> Result<bool> {
         let ex_sock = self.ctx.socket(zmq::PAIR)?;
         ex_sock.bind("inproc://experiment")?;
         let ctx_clone = self.ctx.clone();
@@ -434,7 +431,7 @@ impl Client {
         Ok(())
     }
 
-    fn validate(&self, experiment: &Experiment) -> Result<bool> {
+    fn validate(&self, experiment: &ExperimentMeta) -> Result<bool> {
         println!("Validating csv data...");
 
         let data_dir = experiment.out_dir.join("data");
@@ -572,24 +569,8 @@ fn handle_save_population(msgb: &[Vec<u8>], out_dir: &Path) -> Result<()> {
 
 fn handle_save_data(msgb: &[Vec<u8>], out_dir: &Path) -> Result<()> {
     let data_dir = out_dir.join("data");
-    let gen_num = de_usize(&msgb[3])?;
-    let data: Option<HashMap<String, Vec<Vec<Option<f64>>>>> = serde_json::from_slice(&msgb[4])
-        .context("serde_json failed to parse additional sim data")?;
-    if let Some(data) = data {
-        for (name, rows) in data {
-            let path = data_dir.join(&name).with_extension("csv");
-            let file = OpenOptions::new().append(true).open(path)?;
-            let mut wtr = csv::Writer::from_writer(file);
-            for row in rows {
-                wtr.write_field(gen_num.to_string())?;
-                wtr.write_record(row.iter().map(|x| match x {
-                    Some(n) => n.to_string(),
-                    None => String::new(),
-                }))?;
-            }
-            wtr.flush()?;
-        }
-    }
+    let gen_num = de_u32(&msgb[3])?;
+    save_exp_data_b(&msgb[4], &data_dir, gen_num)?;
 
     Ok(())
 }

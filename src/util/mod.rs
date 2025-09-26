@@ -6,7 +6,7 @@ pub mod zft;
 use std::{
     any::type_name,
     collections::HashMap,
-    fs,
+    fs::{self, OpenOptions},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -49,7 +49,7 @@ impl SocketByteExt for zmq::Socket {
 
 /// Experiment metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Experiment {
+pub struct ExperimentMeta {
     pub id: u64,
     pub blueprint: Blueprint,
     pub url: String,
@@ -164,6 +164,29 @@ pub fn create_exp_dir(path: &Path, id_x: &str, blueprint: &Blueprint) -> Result<
     Ok(())
 }
 
+/// Save experimental data from squid worker to disk
+pub fn save_exp_data_b(data: &[u8], dir: &Path, genr: u32) -> Result<()> {
+    let data: Option<HashMap<String, Vec<Vec<Option<f64>>>>> =
+        serde_json::from_slice(&data).context("serde_json failed to parse additional sim data")?;
+    if let Some(data) = data {
+        for (name, rows) in data {
+            let path = dir.join(&name).with_extension("csv");
+            let file = OpenOptions::new().append(true).open(path)?;
+            let mut wtr = csv::Writer::from_writer(file);
+            for row in rows {
+                wtr.write_field(genr.to_string())?;
+                wtr.write_record(row.iter().map(|x| match x {
+                    Some(n) => n.to_string(),
+                    None => String::new(),
+                }))?;
+            }
+            wtr.flush()?;
+        }
+    }
+
+    Ok(())
+}
+
 /// deserialize u32 to usize
 pub fn de_usize(bytes: &[u8]) -> Result<usize> {
     Ok(de_u32(bytes)? as usize)
@@ -205,10 +228,11 @@ pub fn broadcast_router<T>(
     map: &HashMap<u64, T>,
     router: &zmq::Socket,
     msgb: &[impl Into<zmq::Message> + Clone],
+    flags: i32,
 ) -> Result<()> {
     for id in map.keys() {
         router.send(id.to_be_bytes().as_slice(), zmq::SNDMORE)?;
-        router.send_multipart(msgb, 0)?;
+        router.send_multipart(msgb, flags)?;
     }
 
     Ok(())

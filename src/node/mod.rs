@@ -245,7 +245,7 @@ pub fn run(broker_addr: String, threads: Option<usize>, local: bool, test: bool)
                     docker::kill_by_exp(&exp_id_label)?;
                 }
                 b"kill" => {
-                    broadcast_router(&dock_threads, &dock_sock, &["abort".as_bytes()])?;
+                    broadcast_router(&dock_threads, &dock_sock, &["abort".as_bytes()], 0)?;
                     docker::kill_by_exp("label=squid_exp_id")?;
                     return Ok(ControlFlow::Break(()));
                 }

@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant, UNIX_EPOCH},
 };
 
-use crate::{ExpHistory, NodeStatus, PopEvaluation, client::Experiment, de_u8, de_usize};
+use crate::{ExpHistory, NodeStatus, PopEvaluation, ExperimentMeta, de_u8, de_usize};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{layout::Flex, prelude::*, style::Stylize, text::ToSpan, widgets::*};
@@ -24,7 +24,7 @@ pub enum AppState {
 
 pub struct App {
     // exp data
-    experiment: Arc<Experiment>,
+    experiment: Arc<ExperimentMeta>,
     start_instant: Instant,
     end_duration: Option<Duration>,
     // exp state
@@ -44,7 +44,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(experiment: Arc<Experiment>) -> io::Result<Self> {
+    pub fn new(experiment: Arc<ExperimentMeta>) -> io::Result<Self> {
         let population_size = experiment.blueprint.ga.population_size;
         let num_gens = experiment.blueprint.ga.num_generations;
 
