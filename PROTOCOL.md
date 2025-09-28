@@ -19,7 +19,7 @@
 ### Client -> Experiment Thread
 
 - run (id: `u64`)
-- abort (id: `u64`)
+- abort
 
 ### Experiment Thread -> Client
 
