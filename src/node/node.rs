@@ -95,7 +95,9 @@ impl Node {
         Ok(nd)
     }
 
-    pub fn run(&mut self) {
+    pub fn run(&mut self) -> Result<()> {
+        self.register()?;
+
         loop {
             if let Err(e) = self.run_inner() {
                 error!("{:?}", e);
@@ -105,11 +107,11 @@ impl Node {
                 break;
             }
         }
+
+        Ok(())
     }
 
     pub fn run_inner(&mut self) -> Result<()> {
-        self.register()?;
-
         loop {
             if self.last_bk_hb_out.elapsed() > BK_HB_INTERVAL {
                 self.maint()?;
