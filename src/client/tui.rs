@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant, UNIX_EPOCH},
 };
 
-use crate::{ExpHistory, NodeStatus, PopEvaluation, ExperimentMeta, de_u8, de_usize};
+use crate::{ExpHistory, ExperimentMeta, NodeStatus, PopEvaluation, de_u8, de_usize};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{layout::Flex, prelude::*, style::Stylize, text::ToSpan, widgets::*};
