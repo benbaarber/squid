@@ -221,25 +221,6 @@ impl Node {
                     });
 
                     self.dr_threads.insert(exp_id, handle);
-
-                    // Supervisor thread
-                    // TODO move this to function to catch errors, kill workers on disconnect
-                    // let ctx_clone = ctx.clone();
-                    // let exp_id_x_trunc = format!("{:x}", exp_id >> 32);
-                    // let supervisor_span = error_span!("supervisor", exp_id = &exp_id_x_trunc);
-                    // let supervisor_thread = thread::spawn(move || -> Result<()> {
-                    //     let _guard = supervisor_span.enter();
-                    //     supervisor(
-                    //         exp_id,
-                    //         id,
-                    //         ctx_clone,
-                    //         task_image,
-                    //         wk_broker_addr,
-                    //         port,
-                    //         num_threads,
-                    //         test,
-                    //     )
-                    // });
                 }
                 b"abort" => {
                     let exp_id_b = msgb[1].as_slice();
